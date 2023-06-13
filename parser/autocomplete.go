@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/baulos-io/baulos-core/target"
+	"github.com/zen-io/zen-core/target"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"golang.org/x/exp/slices"
@@ -181,9 +181,10 @@ func (pp *PackageParser) ExpandTargets(targets []string, defaultScript string) (
 
 		spreadRe := regexp.MustCompile(`^\/\/([\w\d\_\.\-]+)\/(?:([\w\d\_\.\-\/]+)\/)*\.\.\.(:.+)?$`)
 		allRe := regexp.MustCompile(`^\/\/([\w\d\_\.\-]+)\/?(?:([\w\d\_\.\-\/]+)*)*:all(:.+)?$`)
-		onlyPkgRe := regexp.MustCompile(`^\/\/([\w\d\_\.\-]+)\/?(:[\w\d\_\.\-\/]+)*$`)
+		onlyPkgRe := regexp.MustCompile(`^\/\/([\w\d\_\.\-]+)\/?([\w\d\_\.\-\/]+)*$`)
 
 		if spreadMatches := spreadRe.FindStringSubmatch(item); len(spreadMatches) > 0 { // spread operator
+			fmt.Println("SPREAD")
 			project := spreadMatches[1]
 			pkg := spreadMatches[2]
 			var script string
@@ -210,6 +211,7 @@ func (pp *PackageParser) ExpandTargets(targets []string, defaultScript string) (
 				targets = append(targets, fmt.Sprintf("%s:all%s", r, script))
 			}
 		} else if allMatches := allRe.FindStringSubmatch(item); len(allMatches) > 0 { // :all package
+			fmt.Println("ALL")
 			project := allMatches[1]
 			pkg := allMatches[2]
 
@@ -219,6 +221,7 @@ func (pp *PackageParser) ExpandTargets(targets []string, defaultScript string) (
 			} else {
 				script = defaultScript
 			}
+			fmt.Println(item)
 
 			result, err := pp.GetAllTargetsInPackage(project, pkg)
 			if err != nil {
@@ -229,6 +232,7 @@ func (pp *PackageParser) ExpandTargets(targets []string, defaultScript string) (
 				finalTargets = append(finalTargets, fmt.Sprintf("%s:%s", r.Qn(), script))
 			}
 		} else if onlyPkgRe.MatchString(item) { // pkg without target or spread
+			fmt.Println("NO")
 			targets = append(targets, fmt.Sprintf("%s:all", item))
 		} else {
 			ensureFqn, err := target.NewFqnFromStr(item)

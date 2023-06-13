@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/baulos-io/baulos-core/utils"
+	"github.com/zen-io/zen-core/utils"
 
 	"github.com/imdario/mergo"
 	"github.com/mitchellh/mapstructure"
@@ -78,7 +78,7 @@ func (pp *PackageParser) ReadPackageFile(path, project, pkg string) (map[string]
 		return nil, fmt.Errorf("unmarshalling blocks: %w", err)
 	}
 
-	vars := map[string]string{}
+	vars := pp.contexts[project].Variables
 	if blocks, ok := pkgBlocks["variables"]; ok {
 		for k, v := range blocks[0] {
 			vars[strings.ToUpper(k)] = v.(string)
@@ -94,7 +94,7 @@ func (pp *PackageParser) ReadPackageFile(path, project, pkg string) (map[string]
 			if ic.Path != nil {
 				interpolatedPath, err := utils.Interpolate(*ic.Path, vars)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("interpolating include path: %w", err)
 				}
 				if includedBlocks, err := pp.ReadPackageFile(filepath.Join(filepath.Dir(path), interpolatedPath), project, pkg); err != nil {
 					return nil, fmt.Errorf("including in block %s: %w", path, err)
@@ -104,7 +104,8 @@ func (pp *PackageParser) ReadPackageFile(path, project, pkg string) (map[string]
 			} else if ic.Template != nil {
 				interpolatedTemplatePath, err := utils.Interpolate(*ic.Template, vars)
 				if err != nil {
-					return nil, err
+					utils.PrettyPrint(vars)
+					return nil, fmt.Errorf("interpolating template path: %w", err)
 				}
 
 				content, err = ioutil.ReadFile(interpolatedTemplatePath)

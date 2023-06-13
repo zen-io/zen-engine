@@ -6,7 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 
-	environs "github.com/baulos-io/baulos-core/environments"
+	environs "github.com/zen-io/zen-core/environments"
 
 	"github.com/imdario/mergo"
 	"github.com/mitchellh/mapstructure"
@@ -14,7 +14,7 @@ import (
 )
 
 type ProjectConfig struct {
-	Baulos   *ProjectBauLosConfig    `mapstructure:"baulos"`
+	Zen      *ProjectZenConfig       `mapstructure:"zen"`
 	Parse    *ProjectParseConfig     `mapstructure:"parse"`
 	Build    *ProjectBuildConfig     `mapstructure:"build"`
 	Deploy   *ProjectDeployConfig    `mapstructure:"deploy"`
@@ -22,7 +22,7 @@ type ProjectConfig struct {
 	Commands []*ProjectCommandConfig `mapstructure:"command"`
 }
 
-type ProjectBauLosConfig struct {
+type ProjectZenConfig struct {
 	Version string `mapstructure:"version"`
 }
 
@@ -66,7 +66,7 @@ func LoadProjectConfig(configPath string) (*ProjectConfig, error) {
 	}
 
 	baseCfg := &ProjectConfig{
-		Baulos: &ProjectBauLosConfig{
+		Zen: &ProjectZenConfig{
 			Version: "latest",
 		},
 		Parse: &ProjectParseConfig{
@@ -118,14 +118,14 @@ func LoadProjectConfig(configPath string) (*ProjectConfig, error) {
 		loadedCfg.Parse.Placement = []string{"{PKG}"}
 	}
 
-	if val, ok := unmarshalledConfig["baulos"]; ok {
+	if val, ok := unmarshalledConfig["zen"]; ok {
 		if len(val) > 1 {
 			return nil, fmt.Errorf("only one config block allowed")
 		} else {
-			mapstructure.Decode(val[0], &loadedCfg.Baulos)
+			mapstructure.Decode(val[0], &loadedCfg.Zen)
 		}
 	} else {
-		loadedCfg.Baulos = &ProjectBauLosConfig{}
+		loadedCfg.Zen = &ProjectZenConfig{}
 	}
 
 	if val, ok := unmarshalledConfig["build"]; ok {

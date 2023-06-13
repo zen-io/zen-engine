@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	baulos_targets "github.com/baulos-io/baulos-core/target"
+	zen_targets "github.com/zen-io/zen-core/target"
 
 	"golang.org/x/exp/slices"
 )
@@ -32,7 +32,7 @@ func (eng *Engine) recursiveAddTargetsToGraph(targets []string) error {
 	targetFqn := targets[0]
 	targets = targets[1:]
 
-	fqn, err := baulos_targets.NewFqnFromStr(targetFqn)
+	fqn, err := zen_targets.NewFqnFromStr(targetFqn)
 	if err != nil {
 		return err
 	}
@@ -70,10 +70,10 @@ func (eng *Engine) recursiveAddTargetsToGraph(targets []string) error {
 	return eng.recursiveAddTargetsToGraph(targets)
 }
 
-func (eng *Engine) getDependenciesToAdd(script string, target *baulos_targets.Target, leftoverTargets []string) ([]string, error) {
+func (eng *Engine) getDependenciesToAdd(script string, target *zen_targets.Target, leftoverTargets []string) ([]string, error) {
 	depsToCheck := []string{}
 	for _, depFqn := range target.Scripts[script].Deps {
-		fqn, err := baulos_targets.NewFqnFromStr(depFqn)
+		fqn, err := zen_targets.NewFqnFromStr(depFqn)
 		if err != nil {
 			return nil, err
 		}

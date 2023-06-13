@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/baulos-io/baulos"
-	"github.com/baulos-io/baulos/src/config"
+	"github.com/zen-io/zen-core/mock"
+	"github.com/zen-io/zen-core/utils"
+	"github.com/zen-io/zen-engine/config"
 	"gotest.tools/v3/assert"
 )
 

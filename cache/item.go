@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/baulos-io/baulos-core/target"
+	"github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-core/utils"
 )
 
 type CacheItemMappings struct {
@@ -29,7 +30,7 @@ type CacheItem struct {
 }
 
 func (ci *CacheItem) BuildCachePath() string {
-	if ci.BaseBuildCache == "" {
+	if ci.target.External || ci.BaseBuildCache == "" {
 		return ci.target.Path()
 	} else {
 		return filepath.Join(ci.BaseBuildCache, ci.Hash)
@@ -73,8 +74,10 @@ func (ci *CacheItem) DeleteCache() error {
 		return fmt.Errorf("clean metadata: %w", err)
 	}
 
-	if err := os.RemoveAll(ci.BuildCachePath()); err != nil {
-		return fmt.Errorf("clean build: %w", err)
+	if !ci.target.External {
+		if err := os.RemoveAll(ci.BuildCachePath()); err != nil {
+			return fmt.Errorf("clean build: %w", err)
+		}
 	}
 
 	if err := os.RemoveAll(ci.BuildOutPath()); err != nil {
@@ -108,7 +111,7 @@ func (ci *CacheItem) CheckOutputsExist(outs []string) (bool, error) {
 }
 
 func (ci *CacheItem) CopySrcsToCache() error {
-	if ci.BaseBuildCache == "" {
+	if ci.BaseBuildCache == "" || ci.target.External {
 		return nil
 	}
 
@@ -144,7 +147,7 @@ func (ci *CacheItem) CopyOutsIntoOut() error {
 	for to, from := range ci.Mappings.Outs {
 		// from := filepath.Join(ci.BuildCachePath(), fromBase)
 		to = filepath.Join(ci.BuildOutPath(), to)
-		ci.target.Traceln("into out: from %s to %s", from, to)
+		// fmt.Printf("into out: from %s to %s\n", from, to)
 
 		if err := os.MkdirAll(filepath.Dir(to), os.ModePerm); err != nil {
 			return fmt.Errorf("creating directory for output: %w", err)
@@ -192,16 +195,30 @@ func (ci *CacheItem) ExpandOuts(outs []string) error {
 			}
 
 			ci.Mappings.Outs = utils.MergeMaps(ci.Mappings.Outs, m)
-			for _, v := range m {
-				expanded = append(expanded, v)
+			for k := range m {
+				expanded = append(expanded, filepath.Join(ci.BuildOutPath(), k))
 			}
 		} else {
 			ci.Mappings.Outs[o] = filepath.Join(ci.BuildCachePath(), o)
-			expanded = append(expanded, ci.Mappings.Outs[o])
+			expanded = append(expanded, filepath.Join(ci.BuildOutPath(), o))
 		}
 	}
 
 	ci.target.Outs = expanded
+
+	return nil
+}
+
+func (ci *CacheItem) ExpandSrcs() error {
+	expanded := map[string][]string{}
+	for cat, srcs := range ci.Mappings.Srcs {
+		expanded[cat] = make([]string, 0)
+		for src := range srcs {
+			expanded[cat] = append(expanded[cat], filepath.Join(ci.BuildCachePath(), src))
+		}
+	}
+
+	ci.target.Srcs = expanded
 
 	return nil
 }
@@ -215,6 +232,12 @@ func (ci *CacheItem) CalculateTargetBuildHash(srcHashes map[string]map[string]st
 
 	if _, err := shaHash.Write([]byte(fmt.Sprint(ci.target.Env))); err != nil {
 		return err
+	}
+
+	for _, label := range ci.target.Labels {
+		if _, err := shaHash.Write([]byte(label)); err != nil {
+			return err
+		}
 	}
 
 	for e := range ci.target.Environments {

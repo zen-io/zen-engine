@@ -5,12 +5,12 @@ import (
 	"os"
 	"os/exec"
 
-	baulos_targets "github.com/baulos-io/baulos-core/target"
+	zen_targets "github.com/zen-io/zen-core/target"
 )
 
-func EnterTargetShell(target *baulos_targets.Target, script string) {
-	target.Scripts[script].Run = func(target *baulos_targets.Target, runCtx *baulos_targets.RuntimeContext) error {
-		cmd := exec.Command("/bin/sh")
+func EnterTargetShell(target *zen_targets.Target, script string) {
+	target.Scripts[script].Run = func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
+		cmd := exec.Command("sh")
 		// Connect the input and output of the command to the standard input and output of the Go process
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -22,6 +22,7 @@ func EnterTargetShell(target *baulos_targets.Target, script string) {
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("starting command: %w", err)
 		}
+
 		return cmd.Wait()
 	}
 }

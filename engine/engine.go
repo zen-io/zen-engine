@@ -3,10 +3,10 @@ package engine
 import (
 	"os"
 
-	"github.com/baulos-io/baulos-core/target"
-	"github.com/baulos-io/baulos/src/cache"
-	"github.com/baulos-io/baulos/src/config"
-	"github.com/baulos-io/baulos/src/parser"
+	"github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-engine/cache"
+	"github.com/zen-io/zen-engine/config"
+	"github.com/zen-io/zen-engine/parser"
 
 	"github.com/spf13/pflag"
 	dag "github.com/tiagoposse/go-dag"

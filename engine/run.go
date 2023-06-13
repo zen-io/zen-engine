@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/baulos-io/baulos-core/target"
-	"github.com/baulos-io/baulos/src/cache"
+	"github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-engine/cache"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -63,11 +63,14 @@ func (eng *Engine) _run_step(targetFqn string) error {
 				return fmt.Errorf("no environment was provided. Available options are %s", strings.Join(availableEnvs, ","))
 			}
 		}
-		target.SetDeployVariables(
-			eng.Ctx.Env,
-			eng.ProjectDeployConfig(target.Project()).Variables,
-			eng.config.Deploy.Variables,
-		)
+
+		if len(target.Environments) > 0 { // some deployable targets, like docker_container, might be single env
+			target.SetDeployVariables(
+				eng.Ctx.Env,
+				eng.ProjectDeployConfig(target.Project()).Variables,
+				eng.config.Deploy.Variables,
+			)
+		}
 	}
 
 	// pre run

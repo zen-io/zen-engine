@@ -7,7 +7,7 @@ import (
 	"os"
 	"runtime"
 
-	environs "github.com/baulos-io/baulos-core/environments"
+	environs "github.com/zen-io/zen-core/environments"
 
 	"github.com/imdario/mergo"
 	"github.com/mitchellh/mapstructure"
@@ -60,11 +60,11 @@ func LoadConfig() (*Config, error) {
 			Projects: map[string]string{},
 		},
 		Cache: &CacheConfig{
-			Tmp:      StringPtr(os.Getenv("HOME") + "/.bau/cache"),
-			Out:      StringPtr(os.Getenv("HOME") + "/.bau/out"),
-			Metadata: StringPtr(os.Getenv("HOME") + "/.bau/metadata"),
-			Exec:     StringPtr(os.Getenv("HOME") + "/.bau/exec"),
-			Exports:  StringPtr(os.Getenv("HOME") + "/.bau/exports"),
+			Tmp:      StringPtr(os.Getenv("HOME") + "/.zen/cache"),
+			Out:      StringPtr(os.Getenv("HOME") + "/.zen/out"),
+			Metadata: StringPtr(os.Getenv("HOME") + "/.zen/metadata"),
+			Exec:     StringPtr(os.Getenv("HOME") + "/.zen/exec"),
+			Exports:  StringPtr(os.Getenv("HOME") + "/.zen/exports"),
 		},
 		Parse:        &ParseConfig{},
 		Environments: map[string]*environs.Environment{},
@@ -80,7 +80,7 @@ func LoadConfig() (*Config, error) {
 	if value, ok := os.LookupEnv("AHOY_CONFIG"); ok {
 		configPath = value
 	} else {
-		configPath = os.Getenv("HOME") + "/.bau/conf.hcl"
+		configPath = os.Getenv("HOME") + "/.zen/conf.hcl"
 	}
 
 	var content, jsonBytes []byte

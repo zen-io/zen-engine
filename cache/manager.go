@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/baulos-io/baulos/src/config"
+	zen_target "github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-core/utils"
+	"github.com/zen-io/zen-engine/config"
 
 	atomics "github.com/tiagoposse/go-sync-types"
 )
@@ -23,7 +25,7 @@ func NewCacheManager(config *config.CacheConfig) *CacheManager {
 	return cm
 }
 
-func (cm *CacheManager) LoadTargetCache(target *target.Target) (*CacheItem, error) {
+func (cm *CacheManager) LoadTargetCache(target *zen_target.Target) (*CacheItem, error) {
 	buildStepFqn := fmt.Sprintf("%s:build", target.Qn())
 	if val, ok := cm.items.Get(buildStepFqn); ok {
 		return val, nil
@@ -43,7 +45,7 @@ func (cm *CacheManager) LoadTargetCache(target *target.Target) (*CacheItem, erro
 		cacheItem.OutDest = filepath.Join(*cm.config.Out, pkgPath)
 	}
 
-	srcHashes, err := cm.ExpandTargetSrcs(cacheItem)
+	srcHashes, err := cm.MapTargetSrcs(cacheItem)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +53,11 @@ func (cm *CacheManager) LoadTargetCache(target *target.Target) (*CacheItem, erro
 	if err := cacheItem.CalculateTargetBuildHash(srcHashes); err != nil {
 		return nil, err
 	}
+
+	if err := cacheItem.ExpandSrcs(); err != nil {
+		return nil, err
+	}
+
 	cacheItem.MetadataPath = filepath.Join(*cm.config.Metadata, pkgPath, cacheItem.Hash, "metadata.json")
 
 	cm.items.Put(buildStepFqn, cacheItem)
@@ -77,35 +84,28 @@ func (cm *CacheManager) TargetOuts(stepQn string) (map[string]string, error) {
 		return nil, fmt.Errorf("%s not in cache", stepQn)
 	}
 
-	// outs := map[string]string{}
-	// for _, v := range ci.Mappings.Outs {
-	// 	outs[v] = filepath.Join(ci.OutDest, v)
-	// }
+	m := map[string]string{}
+	for _, o := range ci.target.Outs {
+		m[strings.TrimPrefix(o, ci.BuildOutPath())] = o
+	}
 
-	// return outs, nil
-	return ci.Mappings.Outs, nil
+	return m, nil
 }
 
-func (cm *CacheManager) ExpandTargetSrcs(ci *CacheItem) (map[string]map[string]string, error) {
-	expandedSrcs := make(map[string][]string)
+func (cm *CacheManager) MapTargetSrcs(ci *CacheItem) (map[string]map[string]string, error) {
 	mappings := make(map[string]map[string]string)
 	hashes := make(map[string]map[string]string)
 
 	for srcCategory, sSrcs := range ci.target.Srcs {
-		expandedSrcs[srcCategory] = []string{}
 		mappings[srcCategory] = map[string]string{}
 		hashes[srcCategory] = map[string]string{}
 
 		for _, src := range sSrcs {
-			if target.IsTargetReference(src) { // src is a reference
+			if zen_target.IsTargetReference(src) { // src is a reference
 				if m, err := cm.TargetOuts(src); err != nil {
 					return nil, err
 				} else {
 					mappings[srcCategory] = utils.MergeMaps(mappings[srcCategory], m)
-
-					for _, v := range m {
-						expandedSrcs[srcCategory] = append(expandedSrcs[srcCategory], v)
-					}
 
 					hashes[srcCategory][src], err = cm.TargetHash(src)
 					if err != nil {
@@ -122,8 +122,6 @@ func (cm *CacheManager) ExpandTargetSrcs(ci *CacheItem) (map[string]map[string]s
 				} else {
 					mappings[srcCategory] = utils.MergeMaps(mappings[srcCategory], m)
 					for k, v := range m {
-						expandedSrcs[srcCategory] = append(expandedSrcs[srcCategory], v)
-
 						h, err := utils.FileHash(v)
 						if err != nil {
 							return nil, err
@@ -135,7 +133,6 @@ func (cm *CacheManager) ExpandTargetSrcs(ci *CacheItem) (map[string]map[string]s
 			} else {
 				fullpath := utils.AbsoluteFilePath(ci.target.Path(), src)
 				mappings[srcCategory][src] = fullpath
-				expandedSrcs[srcCategory] = append(expandedSrcs[srcCategory], fullpath)
 				h, err := utils.FileHash(fullpath)
 				if err != nil {
 					return nil, err
@@ -148,7 +145,6 @@ func (cm *CacheManager) ExpandTargetSrcs(ci *CacheItem) (map[string]map[string]s
 	}
 
 	ci.Mappings.Srcs = mappings
-	ci.target.Srcs = expandedSrcs
 
 	return hashes, nil
 }

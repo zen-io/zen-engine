@@ -69,3 +69,6 @@ func TestSplitTargetForAutocomplete(t *testing.T) {
 		}
 	}
 }
+
+func TestAutocompleteProject(t *testing.T) {
+}

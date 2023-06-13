@@ -5,38 +5,41 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/baulos-io/baulos/src/config"
+	"github.com/zen-io/zen-engine/config"
 
-	environs "github.com/baulos-io/baulos-core/environments"
+	environs "github.com/zen-io/zen-core/environments"
+	zen_targets "github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-core/utils"
 
-	archiving "github.com/baulos-io/baulos-target-archiving"
-	docker "github.com/baulos-io/baulos-target-docker"
-	exec "github.com/baulos-io/baulos-target-exec"
-	files "github.com/baulos-io/baulos-target-files"
-	golang "github.com/baulos-io/baulos-target-golang"
-	k8s "github.com/baulos-io/baulos-target-k8s"
-	npm "github.com/baulos-io/baulos-target-npm"
-	s3 "github.com/baulos-io/baulos-target-s3"
-	tf "github.com/baulos-io/baulos-target-terraform"
+	archiving "github.com/zen-io/zen-target-archiving"
+	docker "github.com/zen-io/zen-target-docker"
+	exec "github.com/zen-io/zen-target-exec"
+	files "github.com/zen-io/zen-target-files"
+	golang "github.com/zen-io/zen-target-golang"
+	k8s "github.com/zen-io/zen-target-kubernetes"
+	node "github.com/zen-io/zen-target-node"
+	s3 "github.com/zen-io/zen-target-s3"
+	sh "github.com/zen-io/zen-target-sh"
+	tf "github.com/zen-io/zen-target-terraform"
 
 	"github.com/mitchellh/mapstructure"
 )
 
 type PackageParser struct {
-	knownTargetTypes target.TargetCreatorMap
-	parsedPackages   map[string]map[string]map[string]*target.Target // project -> pkg -> name -> target
+	knownTargetTypes zen_targets.TargetCreatorMap
+	parsedPackages   map[string]map[string]map[string]*zen_targets.Target // project -> pkg -> name -> target
 	projects         map[string]*config.Project
-	contexts         map[string]*target.TargetConfigContext
+	contexts         map[string]*zen_targets.TargetConfigContext
 }
 
 func NewPackageParser(projs map[string]string) (*PackageParser, error) {
 	projects := make(map[string]*config.Project)
-	contexts := map[string]*target.TargetConfigContext{}
-	parsedPackages := map[string]map[string]map[string]*target.Target{}
+	contexts := map[string]*zen_targets.TargetConfigContext{}
+	parsedPackages := map[string]map[string]map[string]*zen_targets.Target{}
 
 	// plugins := []*config.ProjectPluginConfig{}
 	for projName, projPath := range projs {
-		projConfig, err := config.LoadProjectConfig(fmt.Sprintf("%s/.bauconfig", projPath))
+		projConfig, err := config.LoadProjectConfig(fmt.Sprintf("%s/.zenconfig", projPath))
 		if err != nil {
 			return nil, fmt.Errorf("loading project %s: %w", projName, err)
 		}
@@ -45,18 +48,18 @@ func NewPackageParser(projs map[string]string) (*PackageParser, error) {
 			Path:   projPath,
 			Config: projConfig,
 		}
-		parsedPackages[projName] = make(map[string]map[string]*target.Target)
+		parsedPackages[projName] = make(map[string]map[string]*zen_targets.Target)
 	}
 
 	return &PackageParser{
 		projects:         projects,
 		parsedPackages:   parsedPackages,
-		knownTargetTypes: make(target.TargetCreatorMap),
+		knownTargetTypes: make(zen_targets.TargetCreatorMap),
 		contexts:         contexts,
 	}, nil
 }
 
-func (pp *PackageParser) Initialize(ctx *target.RuntimeContext) {
+func (pp *PackageParser) Initialize(ctx *zen_targets.RuntimeContext) {
 	for proj, projConfig := range pp.projects {
 		passedEnv := map[string]string{}
 		for _, e := range append(projConfig.Config.Build.PassEnv, projConfig.Config.Build.PassSecretEnv...) {
@@ -64,23 +67,24 @@ func (pp *PackageParser) Initialize(ctx *target.RuntimeContext) {
 		}
 		projConfig.Config.Deploy.Environments = environs.MergeEnvironmentMaps(ctx.Environments, projConfig.Config.Deploy.Environments)
 
-		pp.contexts[proj] = &target.TargetConfigContext{
+		pp.contexts[proj] = &zen_targets.TargetConfigContext{
 			KnownToolchains: projConfig.Config.Build.Toolchains,
 			Variables:       utils.MergeMaps(ctx.Variables, projConfig.Config.Build.Variables, map[string]string{"REPO_ROOT": projConfig.Path}, passedEnv),
 			Environments:    projConfig.Config.Deploy.Environments,
 		}
 	}
 
-	for _, t := range []target.TargetCreatorMap{
+	for _, t := range []zen_targets.TargetCreatorMap{
 		archiving.KnownTargets,
 		docker.KnownTargets,
 		golang.KnownTargets,
 		files.KnownTargets,
 		k8s.KnownTargets,
-		npm.KnownTargets,
+		node.KnownTargets,
 		s3.KnownTargets,
 		tf.KnownTargets,
 		exec.KnownTargets,
+		sh.KnownTargets,
 	} {
 		for stepType, itype := range t {
 			pp.knownTargetTypes[stepType] = itype
@@ -94,7 +98,7 @@ func (pp *PackageParser) Initialize(ctx *target.RuntimeContext) {
 // 	}
 // }
 
-func (pp *PackageParser) KnownTypes() target.TargetCreatorMap {
+func (pp *PackageParser) KnownTypes() zen_targets.TargetCreatorMap {
 	return pp.knownTargetTypes
 }
 
@@ -145,7 +149,7 @@ func (pp *PackageParser) ParsePackageTargets(project, pkg string) error {
 		return nil
 	}
 
-	pp.parsedPackages[project][pkg] = map[string]*target.Target{}
+	pp.parsedPackages[project][pkg] = map[string]*zen_targets.Target{}
 
 	pkgFilePath := fmt.Sprintf("%s/%s/%s", pp.projects[project].Path, pkg, pp.projects[project].Config.Parse.Filename)
 
@@ -172,19 +176,19 @@ func (pp *PackageParser) ParsePackageTargets(project, pkg string) error {
 	return nil
 }
 
-func (pp *PackageParser) GetTargetInPackage(fqn *target.QualifiedTargetName) (*target.Target, error) {
+func (pp *PackageParser) GetTargetInPackage(fqn *zen_targets.QualifiedTargetName) (*zen_targets.Target, error) {
 	if err := pp.ParsePackageTargets(fqn.Project(), fqn.Package()); err != nil {
 		return nil, fmt.Errorf("getting target %s: %w", fqn.Qn(), err)
 	}
 
 	if val, ok := pp.parsedPackages[fqn.Project()][fqn.Package()][fqn.Name()]; !ok {
-		return nil, fmt.Errorf("%s is not a valid step inside //%s:%s", fqn.Name(), fqn.Project(), fqn.Package())
+		return nil, fmt.Errorf("%s is not a valid step inside //%s/%s", fqn.Name(), fqn.Project(), fqn.Package())
 	} else {
 		return val, nil
 	}
 }
 
-func (pp *PackageParser) GetAllTargetsInPackage(project, pkg string) (map[string]*target.Target, error) {
+func (pp *PackageParser) GetAllTargetsInPackage(project, pkg string) (map[string]*zen_targets.Target, error) {
 	pkgFqn := fmt.Sprintf("%s/%s", project, pkg)
 
 	if err := pp.ParsePackageTargets(project, pkg); err != nil {
