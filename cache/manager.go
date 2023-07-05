@@ -47,15 +47,15 @@ func (cm *CacheManager) LoadTargetCache(target *zen_target.Target) (*CacheItem, 
 
 	srcHashes, err := cm.MapTargetSrcs(cacheItem)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mapping srcs: %w", err)
 	}
 
 	if err := cacheItem.CalculateTargetBuildHash(srcHashes); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("calculating hash: %w", err)
 	}
 
 	if err := cacheItem.ExpandSrcs(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("expanding srcs: %w", err)
 	}
 
 	cacheItem.MetadataPath = filepath.Join(*cm.config.Metadata, pkgPath, cacheItem.Hash, "metadata.json")
@@ -103,13 +103,13 @@ func (cm *CacheManager) MapTargetSrcs(ci *CacheItem) (map[string]map[string]stri
 		for _, src := range sSrcs {
 			if zen_target.IsTargetReference(src) { // src is a reference
 				if m, err := cm.TargetOuts(src); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("getting ref outs %s, %w", src, err)
 				} else {
 					mappings[srcCategory] = utils.MergeMaps(mappings[srcCategory], m)
 
 					hashes[srcCategory][src], err = cm.TargetHash(src)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("getting ref hash %s, %w", src, err)
 					}
 				}
 
@@ -124,7 +124,7 @@ func (cm *CacheManager) MapTargetSrcs(ci *CacheItem) (map[string]map[string]stri
 					for k, v := range m {
 						h, err := utils.FileHash(v)
 						if err != nil {
-							return nil, err
+							return nil, fmt.Errorf("glob file hash %s, %w", v, err)
 						} else {
 							hashes[srcCategory][k] = h
 						}
@@ -135,7 +135,7 @@ func (cm *CacheManager) MapTargetSrcs(ci *CacheItem) (map[string]map[string]stri
 				mappings[srcCategory][src] = fullpath
 				h, err := utils.FileHash(fullpath)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("abs file hash %s, %w", fullpath, err)
 				} else {
 					hashes[srcCategory][src] = h
 				}

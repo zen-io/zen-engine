@@ -77,7 +77,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	var configPath string
-	if value, ok := os.LookupEnv("AHOY_CONFIG"); ok {
+	if value, ok := os.LookupEnv("ZEN_CONFIG"); ok {
 		configPath = value
 	} else {
 		configPath = os.Getenv("HOME") + "/.zen/conf.hcl"

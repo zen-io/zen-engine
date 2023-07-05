@@ -92,7 +92,7 @@ func (pp *PackageParser) Initialize(ctx *zen_targets.RuntimeContext) {
 	}
 }
 
-// func (pp *PackageParser) LoadCommands() []*AhoyCommand {
+// func (pp *PackageParser) LoadCommands() []*ZenCommand {
 // 	for p, conf := range pp.projects {
 
 // 	}
@@ -112,6 +112,7 @@ func (pp *PackageParser) ParseTargetsForBlock(project, pkg, blockType string, bl
 		return err
 	}
 
+	pp.contexts[project].Variables = vars
 	blockTargets, err := iface.GetTargets(pp.contexts[project])
 	if err != nil {
 		if block.(map[string]interface{})["name"] != nil {
@@ -151,7 +152,7 @@ func (pp *PackageParser) ParsePackageTargets(project, pkg string) error {
 
 	pp.parsedPackages[project][pkg] = map[string]*zen_targets.Target{}
 
-	pkgFilePath := fmt.Sprintf("%s/%s/%s", pp.projects[project].Path, pkg, pp.projects[project].Config.Parse.Filename)
+	pkgFilePath := filepath.Join(pp.projects[project].Path, pkg, pp.projects[project].Config.Parse.Filename)
 
 	// read the package
 	pkgBlocks, err := pp.ReadPackageFile(pkgFilePath, project, pkg)
@@ -161,7 +162,7 @@ func (pp *PackageParser) ParsePackageTargets(project, pkg string) error {
 
 	for blockType, blocks := range pkgBlocks {
 		for _, block := range blocks {
-			if err := pp.ParseTargetsForBlock(project, pkg, blockType, block, pp.contexts[project].Variables); err != nil {
+			if err := pp.ParseTargetsForBlock(project, pkg, blockType, block, utils.MergeMaps(pp.contexts[project].Variables, map[string]string{"PWD": filepath.Join(pp.projects[project].Path, pkg)})); err != nil {
 				var name string
 				if val, ok := block["name"]; ok {
 					name = val.(string)

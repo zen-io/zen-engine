@@ -195,12 +195,17 @@ func (ci *CacheItem) ExpandOuts(outs []string) error {
 			}
 
 			ci.Mappings.Outs = utils.MergeMaps(ci.Mappings.Outs, m)
-			for k := range m {
-				expanded = append(expanded, filepath.Join(ci.BuildOutPath(), k))
+			for k, v := range m {
+				if transformed, add := ci.target.TransformOut(ci.target, v); add {
+					ci.Mappings.Outs[k] = transformed
+					expanded = append(expanded, filepath.Join(ci.BuildOutPath(), k))
+				}
 			}
 		} else {
-			ci.Mappings.Outs[o] = filepath.Join(ci.BuildCachePath(), o)
-			expanded = append(expanded, filepath.Join(ci.BuildOutPath(), o))
+			if transformed, add := ci.target.TransformOut(ci.target, o); add {
+				ci.Mappings.Outs[o] = filepath.Join(ci.BuildCachePath(), transformed)
+				expanded = append(expanded, filepath.Join(ci.BuildOutPath(), o))
+			}
 		}
 	}
 
