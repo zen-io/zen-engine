@@ -1,14 +1,17 @@
 package cache
 
 import (
+	"archive/tar"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/zen-io/zen-core/target"
 	"github.com/zen-io/zen-core/utils"
 )
@@ -21,10 +24,13 @@ type CacheItemMappings struct {
 type CacheItem struct {
 	target *target.Target
 
-	Hash           string
-	BaseBuildCache string
-	MetadataPath   string
-	OutDest        string
+	Hash              string
+	BaseBuildCache    string
+	MetadataPath      string
+	OutDest           string
+	Save              func() error
+	Restore           func() error
+	CheckOutputsExist func() (bool, error)
 
 	Mappings *CacheItemMappings
 }
@@ -87,7 +93,7 @@ func (ci *CacheItem) DeleteCache() error {
 	return nil
 }
 
-func (ci *CacheItem) CheckOutputsExist(outs []string) (bool, error) {
+func (ci *CacheItem) VerifyOutputs(outs []string) (bool, error) {
 	for _, out := range outs {
 		if strings.Contains(out, "*") {
 			if err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
@@ -104,7 +110,6 @@ func (ci *CacheItem) CheckOutputsExist(outs []string) (bool, error) {
 				return false, fmt.Errorf("error checking output %s: %w", out, err)
 			}
 		}
-
 	}
 
 	return true, nil
@@ -152,6 +157,8 @@ func (ci *CacheItem) CopyOutsIntoOut() error {
 		if err := os.MkdirAll(filepath.Dir(to), os.ModePerm); err != nil {
 			return fmt.Errorf("creating directory for output: %w", err)
 		}
+
+		ci.target.Traceln("Out from %s to %s", from, to)
 		if err := utils.Copy(from, to); err != nil {
 			if os.IsNotExist(err) {
 				return fmt.Errorf("out %s does not exist: %w", from, err)
@@ -252,6 +259,125 @@ func (ci *CacheItem) CalculateTargetBuildHash(srcHashes map[string]map[string]st
 	}
 
 	ci.Hash = fmt.Sprintf("%x", shaHash.Sum(nil))
+
+	return nil
+}
+
+func (ci *CacheItem) Compress(out string) error {
+	// create the output file
+	outFile, err := os.Create(out)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	// create the zstd writer
+	zstdWriter, err := zstd.NewWriter(outFile)
+	if err != nil {
+		return err
+	}
+
+	// create a tar writer to write multiple files to the zstd writer
+	tarWriter := tar.NewWriter(zstdWriter)
+	defer tarWriter.Close()
+
+	// walk through the source directory and add all files to the tar writer
+	err = filepath.Walk(ci.OutDest, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		relPath, err := filepath.Rel(ci.OutDest, path)
+		if err != nil {
+			return err
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		header := &tar.Header{
+			Name: relPath,
+			Mode: int64(info.Mode()),
+			Size: info.Size(),
+		}
+		err = tarWriter.WriteHeader(header)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(tarWriter, file)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// flush and close the zstd writer
+	if err := zstdWriter.Close(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ci *CacheItem) Decompress(src string) error {
+	// open the compressed file
+	inFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer inFile.Close()
+
+	// create the zstd reader
+	zstdReader, err := zstd.NewReader(inFile)
+	if err != nil {
+		return err
+	}
+
+	// create a tar reader to read multiple files from the zstd reader
+	tarReader := tar.NewReader(zstdReader)
+
+	// extract each file from the tar reader
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		relPath := header.Name
+		absPath := filepath.Join(ci.OutDest, relPath)
+		if header.FileInfo().IsDir() {
+			err = os.MkdirAll(absPath, header.FileInfo().Mode())
+			if err != nil {
+				return err
+			}
+		} else {
+			file, err := os.Create(absPath)
+			if err != nil {
+				return err
+			}
+
+			defer file.Close()
+			_, err = io.Copy(file, tarReader)
+			if err != nil {
+				return err
+			}
+			err = file.Chmod(header.FileInfo().Mode())
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// close the zstd reader
+	zstdReader.Close()
 
 	return nil
 }

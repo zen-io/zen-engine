@@ -16,15 +16,72 @@ import (
 	"golang.org/x/exp/slices"
 )
 
+// func (pp *PackageParser) AutocompleteTarget(target string) ([]string, error) {
+// 	autocompleteOpts := []string{}
+
+// 	if len(target) < 2 {
+// 		if target != "" && !regexp.MustCompile(`\/+`).MatchString(target) {
+// 			return []string{}, nil
+// 		} else {
+// 			return []string{"//"}, nil
+// 		}
+// 	}
+
+// 	project, pkg, targetName, err := SplitTargetForAutocomplete(target)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	// complete just the project
+// 	if len(pkg) == 0 && len(targetName) == 0 && !strings.HasSuffix(target, "/") {
+// 		opts := pp.autocompleteProject(project)
+// 		if len(opts) == 1 && opts[0] == target {
+// 			autocompleteOpts = []string{opts[0] + "/"}
+// 		} else {
+// 			autocompleteOpts = opts
+// 		}
+// 		return autocompleteOpts, nil
+// 	}
+
+// 	// if the target does not contain a : character, attempt to autocomplete packages
+// 	if !strings.Contains(target, ":") {
+// 		if complete, err := pp.autocompletePackage(project, pkg); err != nil {
+// 			return nil, err
+// 		} else { // we only want the next part of the path, not all of it
+// 			autocompleteOpts = append(autocompleteOpts, complete...)
+// 		}
+// 	}
+
+// 	// if more than one options is identified, add a spread operator
+// 	if len(autocompleteOpts) > 1 && strings.HasSuffix(target, "/") {
+// 		autocompleteOpts = append([]string{fmt.Sprintf("%s/...", autocompleteOpts[0][:strings.LastIndex(autocompleteOpts[0], "/")])}, autocompleteOpts...)
+// 	} else if len(autocompleteOpts) == 1 && autocompleteOpts[0] == target {
+// 		autocompleteOpts[0] = autocompleteOpts[0] + "/"
+// 	}
+
+// 	// if the autocomplete does not end with /, attempt to load target names for the package
+// 	if !strings.HasSuffix(target, "/") {
+// 		if complete, err := pp.autocompleteTargetNamesForPackage(project, pkg, targetName); err != nil {
+// 			return nil, err
+// 		} else if len(complete) > 0 {
+// 			autocompleteOpts = append(autocompleteOpts, complete...)
+// 		}
+// 	}
+
+// 	sort.Strings(autocompleteOpts)
+
+//		return autocompleteOpts, nil
+//	}
+
 func (pp *PackageParser) AutocompleteTarget(target string) ([]string, error) {
 	autocompleteOpts := []string{}
 
 	if len(target) < 2 {
 		if target != "" && !regexp.MustCompile(`\/+`).MatchString(target) {
 			return []string{}, nil
-		} else {
-			return []string{"//"}, nil
 		}
+
+		return []string{"//"}, nil
 	}
 
 	project, pkg, targetName, err := SplitTargetForAutocomplete(target)
@@ -32,10 +89,14 @@ func (pp *PackageParser) AutocompleteTarget(target string) ([]string, error) {
 		return nil, err
 	}
 
-	// complete just the project
-	if len(pkg) == 0 && len(targetName) == 0 && !strings.HasSuffix(target, "/") {
+	isPkgEmpty := len(pkg) == 0
+	isTargetNameEmpty := len(targetName) == 0
+	isTargetNotEndsWithSlash := !strings.HasSuffix(target, "/")
+
+	if isPkgEmpty && isTargetNameEmpty && isTargetNotEndsWithSlash {
 		opts := pp.autocompleteProject(project)
-		if len(opts) == 1 && opts[0] == target {
+		isSingleOptAndEqualToTarget := len(opts) == 1 && opts[0] == target
+		if isSingleOptAndEqualToTarget {
 			autocompleteOpts = []string{opts[0] + "/"}
 		} else {
 			autocompleteOpts = opts
@@ -43,25 +104,27 @@ func (pp *PackageParser) AutocompleteTarget(target string) ([]string, error) {
 		return autocompleteOpts, nil
 	}
 
-	// if the target does not contain a : character, attempt to autocomplete packages
-	if !strings.Contains(target, ":") {
-		if complete, err := pp.autocompletePackage(project, pkg); err != nil {
+	isTargetContainsColon := strings.Contains(target, ":")
+
+	if !isTargetContainsColon {
+		complete, err := pp.autocompletePackage(project, pkg)
+		if err != nil {
 			return nil, err
-		} else { // we only want the next part of the path, not all of it
-			autocompleteOpts = append(autocompleteOpts, complete...)
 		}
+		autocompleteOpts = append(autocompleteOpts, complete...)
 	}
 
-	// if more than one options is identified, add a spread operator
-	if len(autocompleteOpts) > 1 && strings.HasSuffix(target, "/") {
+	isTargetEndsWithSlash := strings.HasSuffix(target, "/")
+
+	if len(autocompleteOpts) > 1 && isTargetEndsWithSlash {
 		autocompleteOpts = append([]string{fmt.Sprintf("%s/...", autocompleteOpts[0][:strings.LastIndex(autocompleteOpts[0], "/")])}, autocompleteOpts...)
 	} else if len(autocompleteOpts) == 1 && autocompleteOpts[0] == target {
-		autocompleteOpts[0] = autocompleteOpts[0] + "/"
+		autocompleteOpts[0] += "/"
 	}
 
-	// if the autocomplete does not end with /, attempt to load target names for the package
-	if !strings.HasSuffix(target, "/") {
-		if complete, err := pp.autocompleteTargetNamesForPackage(project, pkg, targetName); err != nil {
+	if !isTargetEndsWithSlash {
+		complete, err := pp.autocompleteTargetNamesForPackage(project, pkg, targetName)
+		if err != nil {
 			return nil, err
 		} else if len(complete) > 0 {
 			autocompleteOpts = append(autocompleteOpts, complete...)
@@ -90,9 +153,9 @@ func (pp *PackageParser) searchPackage(project, pkg string) ([]string, []string,
 	allPkgs := []string{}
 
 	projPath := pp.projects[project].Path
-	projFilename := pp.projects[project].Config.Parse.Filename
+	projFilename := pp.projects[project].Parse.Filename
 
-	for _, placementOpt := range pp.projects[project].Config.Parse.Placement {
+	for _, placementOpt := range pp.projects[project].Parse.Placement {
 		searchPath := filepath.Join(projPath, strings.ReplaceAll(placementOpt, "{PKG}", pkg+"*"), "**", projFilename)
 
 		optPrefix := filepath.Dir(strings.ReplaceAll(placementOpt, "{PKG}", pkg)) + "/"
@@ -132,23 +195,18 @@ func (pp *PackageParser) autocompletePackage(project, pkg string) ([]string, err
 func (pp *PackageParser) autocompleteTargetNamesForPackage(project, pkg, targetName string) ([]string, error) {
 	autocompleteOpts := []string{}
 
-	if err := pp.ParsePackageTargets(project, pkg); err != nil {
+	pkgTargets, err := pp.ParsePackageTargets(project, pkg)
+	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("autocompleting //%s/%s: %w", project, pkg, err)
 		}
-	} else {
-		pkgTargets, err := pp.GetAllTargetsInPackage(project, pkg)
-		if err != nil {
-			return nil, err
-		} else {
-			for _, t := range pkgTargets {
-				if strings.HasPrefix(t.Name, targetName) {
-					autocompleteOpts = append(autocompleteOpts, fmt.Sprintf("//%s/%s:%s", project, pkg, t.Name))
-				}
-			}
-		}
 	}
 
+	for _, t := range pkgTargets {
+		if strings.HasPrefix(t.Name, targetName) {
+			autocompleteOpts = append(autocompleteOpts, fmt.Sprintf("//%s/%s:%s", project, pkg, t.Name))
+		}
+	}
 	return autocompleteOpts, nil
 }
 
@@ -220,7 +278,7 @@ func (pp *PackageParser) ExpandTargets(targets []string, defaultScript string) (
 				script = defaultScript
 			}
 
-			result, err := pp.GetAllTargetsInPackage(project, pkg)
+			result, err := pp.ParsePackageTargets(project, pkg)
 			if err != nil {
 				return nil, err
 			}

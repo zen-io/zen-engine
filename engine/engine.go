@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/zen-io/zen-core/target"
+	zen_targets "github.com/zen-io/zen-core/target"
 	"github.com/zen-io/zen-engine/cache"
 	"github.com/zen-io/zen-engine/config"
 	"github.com/zen-io/zen-engine/parser"
@@ -14,13 +17,13 @@ import (
 )
 
 type Engine struct {
-	config *config.Config
-	Cache  *cache.CacheManager
-	out    *out_mgr.OutputManager
-	Ctx    *target.RuntimeContext
+	cliconfig *config.CliConfig
+	Projects  map[string]*config.Project
+	out       *out_mgr.OutputManager
+	Ctx       *target.RuntimeContext
 
 	// DAG
-	targets map[string]*target.Target
+	targets map[string]map[string]map[string]*target.Target
 	*dag.DAG
 
 	prePostFns map[string]*RunFnMap
@@ -30,20 +33,20 @@ type Engine struct {
 }
 
 func NewEngine() (*Engine, error) {
-	config, err := config.LoadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	parser, err := parser.NewPackageParser(config.Global.Projects)
+	parser, err := parser.NewPackageParser()
 	if err != nil {
 		return nil, err
 	}
 
 	eng := &Engine{
-		config:        config,
-		Cache:         cache.NewCacheManager(config.Cache),
-		targets:       make(map[string]*target.Target),
+		cliconfig:     cfg,
+		Projects:      make(map[string]*config.Project),
+		targets:       make(map[string]map[string]map[string]*target.Target),
 		PackageParser: parser,
 		prePostFns:    make(map[string]*RunFnMap),
 	}
@@ -53,9 +56,8 @@ func NewEngine() (*Engine, error) {
 
 func (eng *Engine) Initialize(flags *pflag.FlagSet) (err error) {
 	// Setup context
-	ctx := target.NewRuntimeContext(flags, eng.config.Environments, *eng.config.Build.Path, eng.config.Host.OS, eng.config.Host.Arch)
+	ctx := target.NewRuntimeContext(flags, *eng.cliconfig.Build.Path, eng.cliconfig.Host.OS, eng.cliconfig.Host.Arch)
 	eng.Ctx = ctx
-	eng.PackageParser.Initialize(ctx)
 
 	// Setup UI
 	uiOpts := []out_mgr.OutputManagerOption{
@@ -101,6 +103,24 @@ func (eng *Engine) Initialize(flags *pflag.FlagSet) (err error) {
 	}
 
 	eng.DAG = dag.NewDAG(dagOpts...)
+
+	projConfigs := make(map[string]*config.ProjectConfig)
+	for projName, projPath := range eng.cliconfig.Global.Projects {
+		projConfig, err := config.LoadProjectConfig(filepath.Join(projPath, ".zenconfig"), eng.cliconfig)
+		if err != nil {
+			return fmt.Errorf("loading project %s: %w", projName, err)
+		}
+
+		eng.Projects[projName] = &config.Project{
+			Config: projConfig,
+			Cache:  cache.NewCacheManager(projConfig.Cache),
+		}
+
+		eng.targets[projName] = make(map[string]map[string]*zen_targets.Target)
+		projConfigs[projName] = projConfig
+	}
+
+	eng.PackageParser.Initialize(projConfigs)
 	return nil
 }
 
@@ -118,14 +138,18 @@ func (e *Engine) Done() {
 
 func (eng *Engine) CleanCache(args []string) error {
 	if len(args) == 0 {
-		if err := os.RemoveAll(*eng.config.Cache.Tmp); err != nil {
-			return err
+		for _, proj := range eng.Projects {
+			if err := os.RemoveAll(*proj.Config.Cache.Tmp); err != nil {
+				return err
+			}
+			if err := os.RemoveAll(*proj.Config.Cache.Metadata); err != nil {
+				return err
+			}
+			if err := os.RemoveAll(*proj.Config.Cache.Out); err != nil {
+				return err
+			}
 		}
-		if err := os.RemoveAll(*eng.config.Cache.Metadata); err != nil {
-			return err
-		}
-
-		return os.RemoveAll(*eng.config.Cache.Out)
+		return nil
 	}
 	//  else {
 	// 	return eng.NoBuildGraphAndRun(args, "clean")
@@ -137,4 +161,40 @@ func (eng *Engine) RegisterCommandFunctions(fns map[string]*RunFnMap) {
 	for k, v := range fns {
 		eng.prePostFns[k] = v
 	}
+}
+
+func (eng *Engine) ResolveTarget(fqn *target.QualifiedTargetName) ([]*target.Target, error) {
+	ret := make([]*target.Target, 0)
+
+	if eng.targets[fqn.Project()][fqn.Package()] == nil {
+		eng.targets[fqn.Project()][fqn.Package()] = make(map[string]*zen_targets.Target)
+		ts, err := eng.ParsePackageTargets(fqn.Project(), fqn.Package())
+		if err != nil {
+			return nil, fmt.Errorf("getting target %s: %w", fqn.Qn(), err)
+		}
+
+		for _, t := range ts {
+			t.SetFqn(fqn.Project(), fqn.Package())
+			t.SetOriginalPath(filepath.Dir(eng.Projects[fqn.Project()].Config.PathForPackage(fqn.Package())))
+			t.ExpandEnvironments(eng.Projects[fqn.Project()].Config.Deploy.Environments)
+			t.SetBuildVariables(eng.Projects[fqn.Project()].Config.Build.Variables)
+
+			if err := t.EnsureValidTarget(); err != nil {
+				return nil, fmt.Errorf("%s is not a valid target: %w", t.Qn(), err)
+			}
+			eng.targets[t.Project()][t.Package()][t.Name] = t
+		}
+	}
+
+	if fqn.Name() == "all" {
+		for _, t := range eng.targets[fqn.Project()][fqn.Package()] {
+			ret = append(ret, t)
+		}
+	} else if val, ok := eng.targets[fqn.Project()][fqn.Package()][fqn.Name()]; ok {
+		ret = append(ret, val)
+	} else {
+		return nil, fmt.Errorf("%s is not a valid step", fqn.Qn())
+	}
+
+	return ret, nil
 }
