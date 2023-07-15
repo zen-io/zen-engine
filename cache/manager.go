@@ -7,20 +7,44 @@ import (
 
 	zen_target "github.com/zen-io/zen-core/target"
 	"github.com/zen-io/zen-core/utils"
-	"github.com/zen-io/zen-engine/config"
 
 	atomics "github.com/tiagoposse/go-sync-types"
 )
 
+type CacheIO interface {
+	Save(key, fpath string) func() error
+	Restore(key string) func() error
+	Delete(key string) func() error
+	CheckOutputsExist(key string) func() (bool, error)
+}
+
+type CacheConfig struct {
+	Tmp      *string           `hcl:"tmp"`
+	Metadata *string           `hcl:"metadata"`
+	Out      *string           `hcl:"out"`
+	Exec     *string           `hcl:"logs"`
+	Exports  *string           `hcl:"exports"`
+	Type     *string           `hcl:"type"`
+	Config   map[string]string `hcl:"config"`
+}
+
 type CacheManager struct {
-	config *config.CacheConfig
+	config *CacheConfig
+	io     CacheIO
 	items  *atomics.Map[string, *CacheItem] //map[string]*CacheItem
 }
 
-func NewCacheManager(config *config.CacheConfig) *CacheManager {
+func NewCacheManager(config *CacheConfig) *CacheManager {
 	cm := &CacheManager{
 		config: config,
 		items:  atomics.NewMap[string, *CacheItem](),
+	}
+
+	// type defaults to local
+	if *config.Type == "local" {
+		cm.io = &LocalCache{
+			outpath: *config.Out,
+		}
 	}
 	return cm
 }
@@ -31,8 +55,6 @@ func (cm *CacheManager) LoadTargetCache(target *zen_target.Target) (*CacheItem, 
 		return val, nil
 	}
 
-	pkgPath := strings.ReplaceAll(target.Qn(), ":", "/")
-
 	cacheItem := &CacheItem{
 		target: target,
 		Mappings: &CacheItemMappings{
@@ -40,9 +62,10 @@ func (cm *CacheManager) LoadTargetCache(target *zen_target.Target) (*CacheItem, 
 			Outs: make(map[string]string),
 		},
 	}
+
 	if !target.External {
-		cacheItem.BaseBuildCache = filepath.Join(*cm.config.Tmp, pkgPath)
-		cacheItem.OutDest = filepath.Join(*cm.config.Out, pkgPath)
+		cacheItem.BaseBuildCache = filepath.Join(*cm.config.Tmp, target.Package(), target.Name)
+		cacheItem.OutDest = filepath.Join(*cm.config.Out, target.Package(), target.Name)
 	}
 
 	srcHashes, err := cm.MapTargetSrcs(cacheItem)
@@ -58,8 +81,11 @@ func (cm *CacheManager) LoadTargetCache(target *zen_target.Target) (*CacheItem, 
 		return nil, fmt.Errorf("expanding srcs: %w", err)
 	}
 
-	cacheItem.MetadataPath = filepath.Join(*cm.config.Metadata, pkgPath, cacheItem.Hash, "metadata.json")
-
+	cacheKey := filepath.Join(target.Package(), target.Name, cacheItem.Hash)
+	cacheItem.MetadataPath = filepath.Join(*cm.config.Metadata, cacheKey+".json")
+	cacheItem.Save = cm.io.Save(cacheKey, filepath.Join(*cm.config.Tmp, cacheKey+".tar"))
+	cacheItem.Restore = cm.io.Restore(cacheKey)
+	cacheItem.CheckOutputsExist = cm.io.CheckOutputsExist(cacheKey)
 	cm.items.Put(buildStepFqn, cacheItem)
 
 	return cacheItem, nil

@@ -37,10 +37,11 @@ func (eng *Engine) recursiveAddTargetsToGraph(targets []string) error {
 		return err
 	}
 
-	target, err := eng.GetTargetInPackage(fqn)
+	ts, err := eng.ResolveTarget(fqn)
 	if err != nil {
 		return fmt.Errorf("getting target %s: %w", targetFqn, err)
 	}
+	target := ts[0]
 
 	if target.Scripts[fqn.Script()] == nil {
 		return eng.recursiveAddTargetsToGraph(targets)
@@ -48,8 +49,8 @@ func (eng *Engine) recursiveAddTargetsToGraph(targets []string) error {
 
 	// actually add to the graph
 	eng.AddVertex(targetFqn, func() error { return eng._run_step(targetFqn) })
-	if eng.targets[target.Qn()] == nil {
-		eng.targets[target.Qn()] = target
+	if eng.targets[target.Project()][target.Package()][target.Name] == nil {
+		eng.targets[target.Project()][target.Package()][target.Name] = target
 	}
 
 	depFqns, err := eng.getDependenciesToAdd(fqn.Script(), target, targets)
@@ -78,19 +79,29 @@ func (eng *Engine) getDependenciesToAdd(script string, target *zen_targets.Targe
 			return nil, err
 		}
 
-		if fqn.Name() == "all" {
-			depTargets, err := eng.GetAllTargetsInPackage(fqn.Project(), fqn.Package())
-			if err != nil {
-				return nil, fmt.Errorf("getting all targets for %s: %w", depFqn, err)
-			}
+		// if fqn.Name() == "all" {
+		// 	depTargets, err := eng.ResolveTarget(fqn)
+		// 	if err != nil {
+		// 		return nil, fmt.Errorf("getting all targets for %s: %w", depFqn, err)
+		// 	}
 
-			for _, t := range depTargets {
-				if t.Scripts[script] != nil {
-					depsToCheck = append(depsToCheck, fmt.Sprintf("%s:%s", t.Qn(), fqn.Script()))
-				}
+		// 	for _, t := range depTargets {
+		// 		if t.Scripts[script] != nil {
+		// 			depsToCheck = append(depsToCheck, fmt.Sprintf("%s:%s", t.Qn(), fqn.Script()))
+		// 		}
+		// 	}
+		// } else {
+		// 	depsToCheck = append(depsToCheck, depFqn)
+		// }
+
+		depTargets, err := eng.ResolveTarget(fqn)
+		if err != nil {
+			return nil, fmt.Errorf("getting all targets for %s: %w", depFqn, err)
+		}
+		for _, t := range depTargets {
+			if t.Scripts[script] != nil {
+				depsToCheck = append(depsToCheck, fmt.Sprintf("%s:%s", t.Qn(), fqn.Script()))
 			}
-		} else {
-			depsToCheck = append(depsToCheck, depFqn)
 		}
 	}
 	pkgFqn := fmt.Sprintf("//%s/%s", target.Project(), target.Package())
