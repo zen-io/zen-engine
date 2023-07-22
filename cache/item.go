@@ -242,6 +242,10 @@ func (ci *CacheItem) CalculateTargetBuildHash(srcHashes map[string]map[string]st
 		return err
 	}
 
+	if _, err := shaHash.Write([]byte(fmt.Sprint(ci.target.Outs))); err != nil {
+		return err
+	}
+
 	if _, err := shaHash.Write([]byte(fmt.Sprint(ci.target.Env))); err != nil {
 		return err
 	}

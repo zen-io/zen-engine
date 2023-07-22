@@ -7,19 +7,17 @@ import (
 
 	"github.com/zen-io/zen-core/mock"
 	"github.com/zen-io/zen-core/utils"
-	"github.com/zen-io/zen-engine/config"
 	"gotest.tools/v3/assert"
 )
 
 func MockNewCacheManager(t *testing.T) *CacheManager {
 	root := t.TempDir()
 
-	return NewCacheManager(&config.CacheConfig{
+	return NewCacheManager(&CacheConfig{
 		Tmp:      utils.StringPtr(filepath.Join(root, "tmp")),
 		Metadata: utils.StringPtr(filepath.Join(root, "metadata")),
 		Out:      utils.StringPtr(filepath.Join(root, "out")),
 		Exec:     utils.StringPtr(filepath.Join(root, "exec")),
-		Exports:  utils.StringPtr(filepath.Join(root, "exports")),
 	})
 }
 

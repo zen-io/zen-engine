@@ -56,18 +56,18 @@ func (ic *IncludeConfig) GetInputsAsVars(required []string) (map[string]string, 
 	return vars, nil
 }
 
-func (ic *IncludeConfig) getFromPath(getNextFile func(path string, vars map[string]string) (map[string][]map[string]interface{}, error), vars map[string]string) (map[string][]map[string]interface{}, error) {
+func (ic *IncludeConfig) getFromPath(getNextFile func(path string) error) error {
 	interpolatedPath, err := utils.Interpolate(*ic.Path, ic.Variables)
 	if err != nil {
-		return nil, fmt.Errorf("interpolating include path: %w", err)
+		return fmt.Errorf("interpolating include path: %w", err)
 	}
 
-	includedBlocks, err := getNextFile(interpolatedPath, vars)
+	err = getNextFile(interpolatedPath)
 	if err != nil {
-		return nil, fmt.Errorf("including block in %s: %w", *ic.Path, err)
+		return fmt.Errorf("including block in %s: %w", *ic.Path, err)
 	}
 
-	return includedBlocks, nil
+	return nil
 }
 
 func (ic *IncludeConfig) getFromTemplate() (map[string][]map[string]interface{}, error) {
