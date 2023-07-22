@@ -174,7 +174,6 @@ func (eng *Engine) ResolveTarget(fqn *target.QualifiedTargetName) ([]*target.Tar
 		}
 
 		for _, t := range ts {
-			t.SetFqn(fqn.Project(), fqn.Package())
 			t.SetOriginalPath(filepath.Dir(eng.Projects[fqn.Project()].Config.PathForPackage(fqn.Package())))
 			t.ExpandEnvironments(eng.Projects[fqn.Project()].Config.Deploy.Environments)
 			t.SetBuildVariables(eng.Projects[fqn.Project()].Config.Build.Variables)

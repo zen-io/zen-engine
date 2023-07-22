@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	zen_targets "github.com/zen-io/zen-core/target"
-	"github.com/zen-io/zen-core/utils"
 	"github.com/zen-io/zen-engine/config"
 
 	archiving "github.com/zen-io/zen-target-archiving"
@@ -65,16 +64,20 @@ func (pp *PackageParser) KnownTypes(project string) zen_targets.TargetCreatorMap
 }
 
 func (pp *PackageParser) ParsePackageTargets(project, pkg string) ([]*zen_targets.Target, error) {
-	// read the package
-	path := pp.projects[project].PathForPackage(pkg)
-	vars := utils.MergeMaps(pp.projects[project].Build.Variables, map[string]string{"PWD": path})
-	pkgBlocks, err := pp.ReadPackageFile(path, vars)
+	rr := ReadRequest{
+		Vars:   pp.projects[project].Build.Variables,
+		Blocks: make(map[string][]map[string]interface{}),
+	}
+
+	err := rr.ReadPackageFile(pp.projects[project].PathForPackage(pkg))
 	if err != nil {
 		return nil, fmt.Errorf("reading package file: %w", err)
 	}
 
+	rr.Vars["PWD"] = pp.projects[project].PathForPackage(pkg)
+
 	targets := make([]*zen_targets.Target, 0)
-	for blockType, blocks := range pkgBlocks {
+	for blockType, blocks := range rr.Blocks {
 		iface, ok := pp.parsers[project][blockType]
 		if !ok {
 			return nil, fmt.Errorf("%s is not a known task type", blockType)
@@ -87,7 +90,7 @@ func (pp *PackageParser) ParsePackageTargets(project, pkg string) ([]*zen_target
 			}
 
 			blockTargets, err := ifaceBlock.GetTargets(&zen_targets.TargetConfigContext{
-				Variables:       vars,
+				Variables:       rr.Vars,
 				KnownToolchains: pp.projects[project].Build.Toolchains,
 				Environments:    pp.projects[project].Deploy.Environments,
 			})
@@ -100,7 +103,10 @@ func (pp *PackageParser) ParsePackageTargets(project, pkg string) ([]*zen_target
 				}
 			}
 
-			targets = append(targets, blockTargets...)
+			for _, bt := range blockTargets {
+				bt.SetFqn(project, pkg)
+				targets = append(targets, bt)
+			}
 		}
 	}
 

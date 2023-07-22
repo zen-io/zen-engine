@@ -130,7 +130,9 @@ func LoadConfig() (*CliConfig, error) {
 	}
 
 	if loadedCfg.Build == nil {
-		loadedCfg.Build = &BuildConfig{}
+		loadedCfg.Build = &BuildConfig{
+			Path: utils.StringPtr(""),
+		}
 	}
 
 	if loadedCfg.Deploy == nil {

@@ -23,7 +23,6 @@ type CacheConfig struct {
 	Metadata *string           `hcl:"metadata"`
 	Out      *string           `hcl:"out"`
 	Exec     *string           `hcl:"logs"`
-	Exports  *string           `hcl:"exports"`
 	Type     *string           `hcl:"type"`
 	Config   map[string]string `hcl:"config"`
 }
