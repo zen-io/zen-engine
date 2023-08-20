@@ -3,14 +3,14 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 
 	hclconv "github.com/tmccombs/hcl2json/convert"
 )
 
 func ReadHclFile(path string) (map[string][]map[string]interface{}, error) {
-	content, err := ioutil.ReadFile(path)
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -33,4 +33,13 @@ func FromHclBytes(content []byte, filename string) (map[string][]map[string]inte
 	}
 
 	return pkgBlocks, nil
+}
+
+func DeepCopyStringMap(m map[string]string) map[string]string {
+	res := make(map[string]string)
+	for k, v := range m {
+		res[k] = v
+	}
+
+	return res
 }

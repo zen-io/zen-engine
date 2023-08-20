@@ -1,28 +1,33 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	environs "github.com/zen-io/zen-core/environments"
 	"github.com/zen-io/zen-core/utils"
 	"github.com/zen-io/zen-engine/cache"
 	eng_utils "github.com/zen-io/zen-engine/utils"
 
-	"github.com/imdario/mergo"
+	"dario.cat/mergo"
+	gplugin "github.com/hashicorp/go-plugin"
 	"github.com/mitchellh/mapstructure"
 )
 
 type ProjectConfig struct {
-	Path     string
-	Zen      *ProjectZenConfig       `mapstructure:"zen"`
-	Parse    *ProjectParseConfig     `mapstructure:"parse"`
-	Build    *ProjectBuildConfig     `mapstructure:"build"`
-	Deploy   *ProjectDeployConfig    `mapstructure:"deploy"`
-	Plugins  []*ProjectPluginConfig  `mapstructure:"plugin"`
-	Commands []*ProjectCommandConfig `mapstructure:"command"`
-	Cache    *cache.CacheConfig      `hcl:"cache,block"`
+	Path         string
+	Zen          *ProjectZenConfig                `mapstructure:"zen"`
+	Parse        *ProjectParseConfig              `mapstructure:"parse"`
+	Build        *ProjectBuildConfig              `mapstructure:"build"`
+	Environments map[string]*environs.Environment `mapstructure:"environments"`
+	Plugins      []*ProjectPluginConfig           `mapstructure:"plugin"`
+	Commands     []*ProjectCommandConfig          `mapstructure:"command"`
+	Cache        *cache.CacheConfig               `hcl:"cache,block"`
 }
 
 type ProjectZenConfig struct {
@@ -35,37 +40,80 @@ type ProjectParseConfig struct {
 }
 
 type ProjectBuildConfig struct {
-	Toolchains      map[string]string `mapstructure:"toolchains"`
-	Variables       map[string]string `mapstructure:"variables"`
-	PassEnv         []string          `mapstructure:"pass_env"`
-	PassSecretEnv   []string          `mapstructure:"pass_secret_env"`
-	SecretVariables map[string]string // this is not passed via the file
-}
-
-type ProjectDeployConfig struct {
-	Environments map[string]*environs.Environment `mapstructure:"environments"`
-	Variables    map[string]string                `mapstructure:"variables"`
+	Toolchains map[string]string `mapstructure:"toolchains"`
+	Env        map[string]string `mapstructure:"env"`
+	PassEnv    []string          `mapstructure:"pass_env"`
+	SecretEnv  []string          `mapstructure:"secret_env"`
 }
 
 type ProjectPluginConfig struct {
-	Name string
-	Repo *string
-	Path *string
+	Name          string            `mapstructure:"name"`
+	Repo          *string           `mapstructure:"repo"`
+	Path          *string           `mapstructure:"path"`
+	DevCmd        *string           `mapstructure:"dev_cmd"`
+	Env           map[string]string `mapstructure:"env"`
+	PassEnv       []string          `mapstructure:"pass_env"`
+	PassSecretEnv []string          `mapstructure:"pass_secret_env"`
+	SecretEnv     map[string]string `mapstructure:"secret_env"`
+	Client        *gplugin.Client
+}
+
+func (ppc *ProjectPluginConfig) ExecCmd() []string {
+	var cmdArgs []string
+	if ppc.DevCmd != nil {
+		cmdArgs = strings.Split(*ppc.DevCmd, " ")
+	} else {
+		cmdArgs = []string{*ppc.Path}
+	}
+
+	return cmdArgs
+}
+
+func (ppc *ProjectPluginConfig) ExpandPluginAcceptedModules() ([]string, error) {
+	var cmdArgs []string
+	if ppc.DevCmd != nil {
+		cmdArgs = strings.Split(*ppc.DevCmd, " ")
+	} else {
+		cmdArgs = []string{*ppc.Path}
+	}
+
+	cmdArgs = append(cmdArgs, "accepted")
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("executing the call: %v", err)
+	}
+
+	// Parse the returned JSON
+	var data []string
+	err = json.Unmarshal(out.Bytes(), &data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing return: %v", err)
+	}
+
+	return data, nil
 }
 
 type ProjectCommandConfig struct {
-	Name string
-	Repo *string
-	Path *string
+	Name            string  `mapstructure:"name"`
+	Repo            *string `mapstructure:"repo"`
+	Path            *string `mapstructure:"path"`
+	UseEnvironments bool    `mapstructure:"use_environments"`
 }
 
 type Project struct {
 	Path   string
 	Config *ProjectConfig
 	Cache  *cache.CacheManager
+
+	Env       map[string]string
+	SecretEnv map[string]string
 }
 
-func LoadProjectConfig(configPath string, cliconfig *CliConfig) (*ProjectConfig, error) {
+func LoadProjectConfig(configPath string) (*ProjectConfig, error) {
 	if _, err := os.Stat(configPath); err != nil {
 		return nil, fmt.Errorf("config %s does not exist", configPath)
 	}
@@ -84,23 +132,20 @@ func LoadProjectConfig(configPath string, cliconfig *CliConfig) (*ProjectConfig,
 		Build: &ProjectBuildConfig{
 			Toolchains: make(map[string]string),
 			PassEnv:    make([]string, 0),
-			Variables: map[string]string{
+			Env: map[string]string{
 				"REPO_ROOT": projRoot,
 			},
-			PassSecretEnv: make([]string, 0),
+			SecretEnv: make([]string, 0),
 		},
-		Deploy: &ProjectDeployConfig{
-			Environments: map[string]*environs.Environment{},
-			Variables:    make(map[string]string),
-		},
+		Environments: map[string]*environs.Environment{},
 		Cache: &cache.CacheConfig{
-			Tmp:      StringPtr(filepath.Join(baseCacheRoot, "cache")),
-			Out:      StringPtr(filepath.Join(baseCacheRoot, "out")),
-			Metadata: StringPtr(filepath.Join(baseCacheRoot, "metadata")),
-			Exec:     StringPtr(filepath.Join(baseCacheRoot, "exec")),
-			Artifacts:  StringPtr(filepath.Join(baseCacheRoot, "artifacts")),
-			Type:     utils.StringPtr("local"),
-			Config:   map[string]string{},
+			Gen:       StringPtr(filepath.Join(baseCacheRoot, "cache")),
+			Out:       StringPtr(filepath.Join(baseCacheRoot, "out")),
+			Metadata:  StringPtr(filepath.Join(baseCacheRoot, "metadata")),
+			Logs:      StringPtr(filepath.Join(baseCacheRoot, "logs")),
+			Artifacts: StringPtr(filepath.Join(baseCacheRoot, "artifacts")),
+			Type:      utils.StringPtr("local"),
+			Config:    map[string]string{},
 		},
 		Plugins:  []*ProjectPluginConfig{},
 		Commands: []*ProjectCommandConfig{},
@@ -145,14 +190,14 @@ func LoadProjectConfig(configPath string, cliconfig *CliConfig) (*ProjectConfig,
 		loadedCfg.Build = &ProjectBuildConfig{}
 	}
 
-	if val, ok := unmarshalledConfig["deploy"]; ok {
+	if val, ok := unmarshalledConfig["environments"]; ok {
 		if len(val) > 1 {
-			return nil, fmt.Errorf("only one deploy block allowed")
+			return nil, fmt.Errorf("only one environments block allowed")
 		} else {
-			mapstructure.Decode(val[0], &loadedCfg.Deploy)
+			mapstructure.Decode(val[0], &loadedCfg.Environments)
 		}
 	} else {
-		loadedCfg.Deploy = &ProjectDeployConfig{}
+		loadedCfg.Environments = make(map[string]*environs.Environment)
 	}
 
 	if val, ok := unmarshalledConfig["cache"]; ok {
@@ -173,38 +218,38 @@ func LoadProjectConfig(configPath string, cliconfig *CliConfig) (*ProjectConfig,
 	}
 
 	if val, ok := unmarshalledConfig["command"]; ok {
-		err := mapstructure.Decode(val, &loadedCfg.Plugins)
+		err := mapstructure.Decode(val, &loadedCfg.Commands)
 		if err != nil {
 			panic(err)
 		}
 	} else {
-		loadedCfg.Plugins = []*ProjectPluginConfig{}
+		loadedCfg.Commands = []*ProjectCommandConfig{}
 	}
 
 	if loadedCfg.Cache == nil {
 		loadedCfg.Cache = &cache.CacheConfig{}
 	}
 
-	// mergo.Merge(baseCfg.Cache, loadedCfg.Cache, mergo.WithOverride)
-	// mergo.Merge(baseCfg.Parse, loadedCfg.Parse, mergo.WithOverride)
-	// mergo.Merge(baseCfg.Build, loadedCfg.Build, mergo.WithOverride)
-	// mergo.Merge(baseCfg.Deploy, loadedCfg.Deploy, mergo.WithOverride)
-
 	mergo.Merge(baseCfg, loadedCfg, mergo.WithOverride, mergo.WithAppendSlice)
+	for _, p := range baseCfg.Plugins {
+		if p.SecretEnv == nil {
+			p.SecretEnv = make(map[string]string)
+		}
+		if p.Env == nil {
+			p.Env = make(map[string]string)
+		}
+		if p.PassSecretEnv != nil {
+			for _, e := range p.PassSecretEnv {
+				p.SecretEnv[e] = os.Getenv(e)
+			}
+		}
 
-	passedEnv := map[string]string{}
-	for _, e := range append(baseCfg.Build.PassEnv, baseCfg.Build.PassSecretEnv...) {
-		passedEnv[e] = os.Getenv(e)
+		if p.PassEnv != nil {
+			for _, e := range p.PassEnv {
+				p.Env[e] = os.Getenv(e)
+			}
+		}
 	}
-	baseCfg.Build.Variables = utils.MergeMaps(cliconfig.Build.Variables, passedEnv, baseCfg.Build.Variables, map[string]string{"PATH": *cliconfig.Build.Path})
-
-	passedSecretEnv := map[string]string{}
-	for _, e := range baseCfg.Build.PassSecretEnv {
-		passedSecretEnv[e] = os.Getenv(e)
-	}
-
-	baseCfg.Build.SecretVariables = passedSecretEnv
-	baseCfg.Deploy.Environments = environs.MergeEnvironmentMaps(cliconfig.Environments, baseCfg.Deploy.Environments)
 
 	return baseCfg, nil
 }

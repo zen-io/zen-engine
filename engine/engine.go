@@ -1,18 +1,21 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	environs "github.com/zen-io/zen-core/environments"
 	"github.com/zen-io/zen-core/target"
 	zen_targets "github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-core/utils"
 	"github.com/zen-io/zen-engine/cache"
 	"github.com/zen-io/zen-engine/config"
 	"github.com/zen-io/zen-engine/parser"
 
 	"github.com/spf13/pflag"
-	dag "github.com/tiagoposse/go-dag"
 	out_mgr "github.com/tiagoposse/go-tasklist-out"
 )
 
@@ -20,11 +23,14 @@ type Engine struct {
 	cliconfig *config.CliConfig
 	Projects  map[string]*config.Project
 	out       *out_mgr.OutputManager
-	Ctx       *target.RuntimeContext
+	Ctx       *zen_targets.RuntimeContext
 
 	// DAG
-	targets map[string]map[string]map[string]*target.Target
-	*dag.DAG
+	maxParallel int
+	builders    map[string]map[string]map[string]*zen_targets.TargetBuilder // project => pkg => target name target builder
+	execSteps   map[string]*ExecutionStep                                   // project => pkg => target name => script step
+	graph       map[string][]string
+	errors      map[string]string
 
 	prePostFns map[string]*RunFnMap
 
@@ -38,7 +44,7 @@ func NewEngine() (*Engine, error) {
 		return nil, err
 	}
 
-	parser, err := parser.NewPackageParser()
+	parser, err := parser.NewPackageParser(cfg.Host)
 	if err != nil {
 		return nil, err
 	}
@@ -46,17 +52,20 @@ func NewEngine() (*Engine, error) {
 	eng := &Engine{
 		cliconfig:     cfg,
 		Projects:      make(map[string]*config.Project),
-		targets:       make(map[string]map[string]map[string]*target.Target),
+		execSteps:     make(map[string]*ExecutionStep),
+		builders:      make(map[string]map[string]map[string]*zen_targets.TargetBuilder),
+		graph:         make(map[string][]string),
+		errors:        make(map[string]string),
 		PackageParser: parser,
 		prePostFns:    make(map[string]*RunFnMap),
+		maxParallel:   20,
 	}
 
 	return eng, nil
 }
 
-func (eng *Engine) Initialize(flags *pflag.FlagSet) (err error) {
+func (eng *Engine) Initialize(flags *pflag.FlagSet, ctx *target.RuntimeContext) (err error) {
 	// Setup context
-	ctx := target.NewRuntimeContext(flags, *eng.cliconfig.Build.Path, eng.cliconfig.Host.OS, eng.cliconfig.Host.Arch)
 	eng.Ctx = ctx
 
 	// Setup UI
@@ -93,30 +102,43 @@ func (eng *Engine) Initialize(flags *pflag.FlagSet) (err error) {
 		return err
 	}
 
-	// Setup the DAG
-	dagOpts := []dag.Option{
-		dag.WithMaxParallel(30),
+	baseEnv := eng.cliconfig.Build.Env
+	baseSecretEnv := eng.cliconfig.Build.SecretEnv
+	baseSecretEnv["PATH"] = strings.Join([]string{*eng.cliconfig.Build.Path, "/usr/local/bin:/usr/bin:/bin", "/usr/sbin:/sbin"}, ":")
+	for _, e := range eng.cliconfig.Build.PassEnv {
+		baseEnv[e] = os.Getenv(e)
 	}
 
-	if int(ui.Verbosity()) >= int(out_mgr.Debug) {
-		dagOpts = append(dagOpts, dag.WithDebugFunc(func(msg string) { eng.Traceln(msg) }))
+	for _, e := range eng.cliconfig.Build.PassSecretEnv {
+		baseSecretEnv[e] = os.Getenv(e)
 	}
-
-	eng.DAG = dag.NewDAG(dagOpts...)
 
 	projConfigs := make(map[string]*config.ProjectConfig)
 	for projName, projPath := range eng.cliconfig.Global.Projects {
-		projConfig, err := config.LoadProjectConfig(filepath.Join(projPath, ".zenconfig"), eng.cliconfig)
+		projConfig, err := config.LoadProjectConfig(filepath.Join(projPath, ".zenconfig"))
 		if err != nil {
 			return fmt.Errorf("loading project %s: %w", projName, err)
 		}
 
 		eng.Projects[projName] = &config.Project{
-			Config: projConfig,
-			Cache:  cache.NewCacheManager(projConfig.Cache),
+			Config:    projConfig,
+			Cache:     cache.NewCacheManager(projConfig.Cache),
+			Env:       utils.MergeMaps(projConfig.Build.Env, baseEnv),
+			SecretEnv: make(map[string]string),
 		}
 
-		eng.targets[projName] = make(map[string]map[string]*zen_targets.Target)
+		for _, e := range projConfig.Build.PassEnv {
+			eng.Projects[projName].Env[e] = os.Getenv(e)
+		}
+		for _, e := range projConfig.Build.SecretEnv {
+			eng.Projects[projName].SecretEnv[e] = os.Getenv(e)
+		}
+
+		eng.Projects[projName].SecretEnv = utils.MergeMaps(baseSecretEnv, eng.Projects[projName].SecretEnv)
+
+		projConfig.Environments = environs.MergeEnvironmentMaps(eng.cliconfig.Environments, projConfig.Environments)
+
+		eng.builders[projName] = make(map[string]map[string]*zen_targets.TargetBuilder)
 		projConfigs[projName] = projConfig
 	}
 
@@ -139,7 +161,7 @@ func (e *Engine) Done() {
 func (eng *Engine) CleanCache(args []string) error {
 	if len(args) == 0 {
 		for _, proj := range eng.Projects {
-			if err := os.RemoveAll(*proj.Config.Cache.Tmp); err != nil {
+			if err := os.RemoveAll(*proj.Config.Cache.Gen); err != nil {
 				return err
 			}
 			if err := os.RemoveAll(*proj.Config.Cache.Metadata); err != nil {
@@ -151,9 +173,7 @@ func (eng *Engine) CleanCache(args []string) error {
 		}
 		return nil
 	}
-	//  else {
-	// 	return eng.NoBuildGraphAndRun(args, "clean")
-	// }
+
 	return nil
 }
 
@@ -163,36 +183,55 @@ func (eng *Engine) RegisterCommandFunctions(fns map[string]*RunFnMap) {
 	}
 }
 
-func (eng *Engine) ResolveTarget(fqn *target.QualifiedTargetName) ([]*target.Target, error) {
-	ret := make([]*target.Target, 0)
-
-	if eng.targets[fqn.Project()][fqn.Package()] == nil {
-		eng.targets[fqn.Project()][fqn.Package()] = make(map[string]*zen_targets.Target)
-		ts, err := eng.ParsePackageTargets(fqn.Project(), fqn.Package())
+func (eng *Engine) ResolveExecutionSteps(fqn *target.QualifiedTargetName) ([]*ExecutionStep, error) {
+	if eng.builders[fqn.Project()][fqn.Package()] == nil {
+		eng.builders[fqn.Project()][fqn.Package()] = make(map[string]*zen_targets.TargetBuilder)
+		tbs, err := eng.ParsePackageTargets(fqn.Project(), fqn.Package())
 		if err != nil {
-			return nil, fmt.Errorf("getting target %s: %w", fqn.Qn(), err)
+			return nil, fmt.Errorf("parsing target %s: %w", fqn.Qn(), err)
 		}
 
-		for _, t := range ts {
-			t.SetOriginalPath(filepath.Dir(eng.Projects[fqn.Project()].Config.PathForPackage(fqn.Package())))
-			t.ExpandEnvironments(eng.Projects[fqn.Project()].Config.Deploy.Environments)
-			t.SetBuildVariables(eng.Projects[fqn.Project()].Config.Build.Variables)
-
-			if err := t.EnsureValidTarget(); err != nil {
-				return nil, fmt.Errorf("%s is not a valid target: %w", t.Qn(), err)
+		for _, tb := range tbs {
+			tb.SetOriginalPath(filepath.Dir(eng.Projects[fqn.Project()].Config.PathForPackage(fqn.Package())))
+			tb.ExpandEnvironments(eng.Projects[fqn.Project()].Config.Environments)
+			
+			
+			if err := tb.EnsureValidTarget(); err != nil {
+				return nil, fmt.Errorf("%s is not a valid target: %w", tb.Qn(), err)
 			}
-			eng.targets[t.Project()][t.Package()][t.Name] = t
+
+			eng.builders[tb.Project()][tb.Package()][tb.Name] = tb
 		}
 	}
 
+	stepScripts := []string{"build"}
+	if fqn.Script() != "build" {
+		stepScripts = append(stepScripts, fqn.Script())
+	}
+	stepNames := make([]string, 0)
+
 	if fqn.Name() == "all" {
-		for _, t := range eng.targets[fqn.Project()][fqn.Package()] {
-			ret = append(ret, t)
+		for name := range eng.builders[fqn.Project()][fqn.Package()] {
+			stepNames = append(stepNames, name)
 		}
-	} else if val, ok := eng.targets[fqn.Project()][fqn.Package()][fqn.Name()]; ok {
-		ret = append(ret, val)
+	} else if _, ok := eng.builders[fqn.Project()][fqn.Package()][fqn.Name()]; ok {
+		stepNames = append(stepNames, fqn.Name())
 	} else {
 		return nil, fmt.Errorf("%s is not a valid step", fqn.Qn())
+	}
+
+	ret := make([]*ExecutionStep, 0)
+
+	for _, name := range stepNames {
+		builder := eng.builders[fqn.Project()][fqn.Package()][name]
+
+		for _, s := range stepScripts {
+			if val, err := eng.NewExecStepFromBuilder(builder, s); err == nil {
+				ret = append(ret, val)
+			} else if err != nil && !errors.Is(ScriptNotSupported{}, err) {
+				return nil, err
+			}
+		}
 	}
 
 	return ret, nil

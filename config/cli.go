@@ -9,7 +9,7 @@ import (
 	"github.com/zen-io/zen-core/utils"
 	zen_utils "github.com/zen-io/zen-engine/utils"
 
-	"github.com/imdario/mergo"
+	"dario.cat/mergo"
 	"github.com/mitchellh/mapstructure"
 )
 
@@ -20,16 +20,11 @@ type GlobalConfig struct {
 type ParseConfig struct{}
 
 type BuildConfig struct {
-	PassEnv         []string          `hcl:"pass_env"`
-	PassSecretEnv   []string          `hcl:"pass_env"`
-	Variables       map[string]string `hcl:"variables"`
-	SecretVariables map[string]string `hcl:"variables"`
-	Path            *string           `hcl:"path"` // additional PATH
-}
-
-type DeployConfig struct {
-	PassEnv   []string          `hcl:"pass_env"`
-	Variables map[string]string `hcl:"variables"`
+	PassEnv       []string          `hcl:"pass_env"`
+	Env           map[string]string `hcl:"env"`
+	PassSecretEnv []string          `hcl:"pass_secret_env"`
+	SecretEnv     map[string]string `hcl:"secret_env"`
+	Path          *string           `hcl:"path"` // additional PATH
 }
 
 type HostConfig struct {
@@ -41,7 +36,6 @@ type CliConfig struct {
 	Global       *GlobalConfig `hcl:"global,block"`
 	Parse        *ParseConfig  `hcl:"parse,block"`
 	Build        *BuildConfig  `hcl:"build,block"`
-	Deploy       *DeployConfig `hcl:"deploy,block"`
 	Host         *HostConfig
 	Environments map[string]*environs.Environment `hcl:"environments,block"`
 }
@@ -54,18 +48,13 @@ func LoadConfig() (*CliConfig, error) {
 		Parse:        &ParseConfig{},
 		Environments: map[string]*environs.Environment{},
 		Build: &BuildConfig{
-			PassEnv: make([]string, 0),
-			Variables: map[string]string{
-				"USER":            os.Getenv("USER"),
-				"HOME":            os.Getenv("HOME"),
-				"SHLVL":           "1",
-				"TARGET.OS":       runtime.GOOS,
-				"TARGET.ARCH":     runtime.GOARCH,
-				"CONFIG.HOSTOS":   runtime.GOOS,
-				"CONFIG.HOSTARCH": runtime.GOARCH,
+			PassEnv:       make([]string, 0),
+			Env:           make(map[string]string),
+			PassSecretEnv: make([]string, 0),
+			SecretEnv:     map[string]string{
+				"HOME": os.Getenv("HOME"),
 			},
 		},
-		Deploy: &DeployConfig{},
 		Host: &HostConfig{
 			OS:   runtime.GOOS,
 			Arch: runtime.GOARCH,
@@ -117,14 +106,6 @@ func LoadConfig() (*CliConfig, error) {
 		}
 	}
 
-	if val, ok := unmarshalledConfig["deploy"]; ok {
-		if len(val) > 1 {
-			return nil, fmt.Errorf("only one Deploy block allowed")
-		} else {
-			mapstructure.Decode(val[0], &loadedCfg.Deploy)
-		}
-	}
-
 	if loadedCfg.Parse == nil {
 		loadedCfg.Parse = &ParseConfig{}
 	}
@@ -135,30 +116,10 @@ func LoadConfig() (*CliConfig, error) {
 		}
 	}
 
-	if loadedCfg.Deploy == nil {
-		loadedCfg.Deploy = &DeployConfig{}
-	}
-
 	mergo.Merge(baseCfg.Parse, loadedCfg.Parse, mergo.WithOverride)
 	mergo.Merge(baseCfg.Global, loadedCfg.Global, mergo.WithOverride)
 	mergo.Merge(baseCfg.Build, loadedCfg.Build, mergo.WithOverride)
-	mergo.Merge(baseCfg.Deploy, loadedCfg.Deploy, mergo.WithOverride)
 	baseCfg.Environments = environs.MergeEnvironmentMaps(baseCfg.Environments, loadedCfg.Environments)
-
-	passedEnv := map[string]string{}
-	for _, e := range baseCfg.Build.PassEnv {
-		passedEnv[e] = os.Getenv(e)
-	}
-
-	passedSecretEnv := map[string]string{}
-	for _, e := range baseCfg.Build.PassSecretEnv {
-		passedSecretEnv[e] = os.Getenv(e)
-	}
-
-	baseCfg.Build.Variables = utils.MergeMaps(passedEnv, baseCfg.Build.Variables)
-	baseCfg.Build.SecretVariables = utils.MergeMaps(passedSecretEnv, baseCfg.Build.SecretVariables)
-
-	baseCfg.Build.Path = utils.StringPtr(fmt.Sprintf("%s:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", *baseCfg.Build.Path))
 
 	return baseCfg, nil
 }

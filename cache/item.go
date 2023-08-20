@@ -25,27 +25,29 @@ type CacheItem struct {
 	target *target.Target
 
 	Hash              string
-	BaseBuildCache    string
+	CachePath         string
 	MetadataPath      string
 	OutDest           string
 	Save              func() error
 	Restore           func() error
 	CheckOutputsExist func() (bool, error)
+	Metadata          map[string]interface{}
+	External          bool
 
 	Mappings *CacheItemMappings
 }
 
 func (ci *CacheItem) BuildCachePath() string {
-	if ci.target.External || ci.BaseBuildCache == "" {
-		return ci.target.Path()
+	if ci.External || ci.CachePath == "" {
+		return ci.target.Cwd
 	} else {
-		return filepath.Join(ci.BaseBuildCache, ci.Hash)
+		return ci.CachePath
 	}
 }
 
 func (ci *CacheItem) BuildOutPath() string {
 	if ci.OutDest == "" {
-		return ci.target.Path()
+		return ci.target.Cwd
 	} else {
 		return filepath.Join(ci.OutDest)
 	}
@@ -61,26 +63,46 @@ func (ci *CacheItem) CheckDeployed() bool {
 	return false
 }
 
+func (ci *CacheItem) LoadMetadata() error {
+	content, err := os.ReadFile(ci.MetadataPath)
+	if err != nil {
+		return fmt.Errorf("loading metadata file: %w", err)
+	}
+	err = json.Unmarshal(content, &ci.Metadata)
+	if err != nil {
+		return fmt.Errorf("unmarshalling metadata file: %w", err)
+	}
+
+	return nil
+}
+
 func (ci *CacheItem) SaveMetadata() error {
-	if err := os.MkdirAll(filepath.Dir(ci.MetadataPath), os.ModePerm); err != nil {
+	var err error
+	err = os.MkdirAll(filepath.Dir(ci.MetadataPath), os.ModePerm)
+	if err != nil {
 		return fmt.Errorf("creating metadata folder: %w", err)
 	}
 
-	if data, err := json.Marshal(map[string]string{}); err != nil {
+	data, err := json.Marshal(ci.Metadata)
+	if err != nil {
 		return err
-	} else if err := os.WriteFile(ci.MetadataPath, data, 0644); err != nil {
-		return err
+	}
+
+	err = os.WriteFile(ci.MetadataPath, data, 0644)
+	if err != nil {
+		return fmt.Errorf("writing to %s: %w", ci.MetadataPath, err)
 	}
 
 	return nil
 }
 
 func (ci *CacheItem) DeleteCache() error {
+	ci.target.Debugln("deleting cache")
 	if err := os.RemoveAll(filepath.Dir(ci.MetadataPath)); err != nil {
 		return fmt.Errorf("clean metadata: %w", err)
 	}
 
-	if !ci.target.External {
+	if !ci.External {
 		if err := os.RemoveAll(ci.BuildCachePath()); err != nil {
 			return fmt.Errorf("clean build: %w", err)
 		}
@@ -115,8 +137,8 @@ func (ci *CacheItem) VerifyOutputs(outs []string) (bool, error) {
 	return true, nil
 }
 
-func (ci *CacheItem) CopySrcsToCache() error {
-	if ci.BaseBuildCache == "" || ci.target.External {
+func (ci *CacheItem) LinkSrcsToCache() error {
+	if ci.CachePath == "" || ci.External {
 		return nil
 	}
 
@@ -126,7 +148,7 @@ func (ci *CacheItem) CopySrcsToCache() error {
 			to := filepath.Join(ci.BuildCachePath(), srcName)
 
 			ci.target.Traceln("into cache: from \"%s\" to \"%s\"", from, to)
-			if err := utils.Copy(from, to); err != nil {
+			if err := utils.Link(from, to); err != nil {
 				return fmt.Errorf("copying src to cache: %w", err)
 			}
 		}
@@ -135,7 +157,7 @@ func (ci *CacheItem) CopySrcsToCache() error {
 	return nil
 }
 
-func (ci *CacheItem) CopyOutsIntoOut() error {
+func (ci *CacheItem) LinkOutsIntoOut() error {
 	if err := os.RemoveAll(ci.BuildOutPath()); err != nil {
 		return fmt.Errorf("removing preexisting out dir: %w", err)
 	}
@@ -150,16 +172,14 @@ func (ci *CacheItem) CopyOutsIntoOut() error {
 	}
 
 	for to, from := range ci.Mappings.Outs {
-		// from := filepath.Join(ci.BuildCachePath(), fromBase)
 		to = filepath.Join(ci.BuildOutPath(), to)
-		// fmt.Printf("into out: from %s to %s\n", from, to)
 
 		if err := os.MkdirAll(filepath.Dir(to), os.ModePerm); err != nil {
 			return fmt.Errorf("creating directory for output: %w", err)
 		}
 
 		ci.target.Traceln("Out from %s to %s", from, to)
-		if err := utils.Copy(from, to); err != nil {
+		if err := utils.Link(from, to); err != nil {
 			if os.IsNotExist(err) {
 				return fmt.Errorf("out %s does not exist: %w", from, err)
 			} else {
@@ -174,7 +194,7 @@ func (ci *CacheItem) CopyOutsIntoOut() error {
 func (ci *CacheItem) ExportOutsToPath() error {
 	for _, toBase := range ci.Mappings.Outs {
 		from := filepath.Join(ci.BuildOutPath(), toBase)
-		to := filepath.Join(ci.target.Path(), toBase)
+		to := filepath.Join(ci.target.Cwd, toBase)
 
 		if err := utils.Copy(from, to); err != nil {
 			if os.IsNotExist(err) {
@@ -203,16 +223,12 @@ func (ci *CacheItem) ExpandOuts(outs []string) error {
 
 			ci.Mappings.Outs = utils.MergeMaps(ci.Mappings.Outs, m)
 			for k, v := range m {
-				if transformed, add := ci.target.TransformOut(ci.target, v); add {
-					ci.Mappings.Outs[k] = transformed
-					expanded = append(expanded, filepath.Join(ci.BuildOutPath(), k))
-				}
+				ci.Mappings.Outs[k] = v
+				expanded = append(expanded, filepath.Join(ci.BuildOutPath(), k))
 			}
 		} else {
-			if transformed, add := ci.target.TransformOut(ci.target, o); add {
-				ci.Mappings.Outs[o] = filepath.Join(ci.BuildCachePath(), transformed)
-				expanded = append(expanded, filepath.Join(ci.BuildOutPath(), o))
-			}
+			ci.Mappings.Outs[o] = filepath.Join(ci.BuildCachePath(), o)
+			expanded = append(expanded, filepath.Join(ci.BuildOutPath(), o))
 		}
 	}
 
@@ -252,12 +268,6 @@ func (ci *CacheItem) CalculateTargetBuildHash(srcHashes map[string]map[string]st
 
 	for _, label := range ci.target.Labels {
 		if _, err := shaHash.Write([]byte(label)); err != nil {
-			return err
-		}
-	}
-
-	for e := range ci.target.Environments {
-		if _, err := shaHash.Write([]byte(e)); err != nil {
 			return err
 		}
 	}

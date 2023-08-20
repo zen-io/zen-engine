@@ -14,7 +14,7 @@ func MockNewCacheManager(t *testing.T) *CacheManager {
 	root := t.TempDir()
 
 	return NewCacheManager(&CacheConfig{
-		Tmp:      utils.StringPtr(filepath.Join(root, "tmp")),
+		Gen:      utils.StringPtr(filepath.Join(root, "gen")),
 		Metadata: utils.StringPtr(filepath.Join(root, "metadata")),
 		Out:      utils.StringPtr(filepath.Join(root, "out")),
 		Exec:     utils.StringPtr(filepath.Join(root, "exec")),
@@ -32,7 +32,7 @@ func TestLoadTargetCacheSimple(t *testing.T) {
 
 	ci, err := cache.LoadTargetCache(target)
 	assert.NilError(t, err)
-	assert.Equal(t, ci.BuildCachePath(), filepath.Join(*cache.config.Tmp, pkgPath, ci.Hash))
+	assert.Equal(t, ci.BuildCachePath(), filepath.Join(*cache.config.Gen, pkgPath, ci.Hash))
 	assert.Equal(t, ci.BuildOutPath(), filepath.Join(*cache.config.Out, pkgPath))
 	assert.DeepEqual(t, ci.Mappings.Srcs, srcMappings)
 

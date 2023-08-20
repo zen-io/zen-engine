@@ -8,8 +8,8 @@ import (
 	zen_targets "github.com/zen-io/zen-core/target"
 )
 
-func EnterTargetShell(target *zen_targets.Target, script string) {
-	target.Scripts[script].Run = func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
+func EnterTargetShell(step *ExecutionStep) {
+	step.Run = func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
 		cmd := exec.Command("sh")
 		// Connect the input and output of the command to the standard input and output of the Go process
 		cmd.Stdin = os.Stdin

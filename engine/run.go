@@ -3,125 +3,142 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/zen-io/zen-core/target"
 	"github.com/zen-io/zen-core/utils"
-	"github.com/zen-io/zen-engine/cache"
+	eng_utils "github.com/zen-io/zen-engine/utils"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
-// special error that signals to stop the execution without errors
-type DoNotContinue struct{}
-
 type RunFnMap struct {
-	Pre  func(eng *Engine, target *target.Target, ci *cache.CacheItem) error
-	Post func(eng *Engine, target *target.Target, ci *cache.CacheItem) error
+	Pre  func(eng *Engine, es *ExecutionStep) error
+	Post func(eng *Engine, es *ExecutionStep) error
 }
 
-func (dnc DoNotContinue) Error() string {
-	return "do not continue"
+func (eng *Engine) _execute_step(es *ExecutionStep, resc chan<- result) {
+	go func() {
+		err := eng._run_step(es)
+		if err != nil {
+			eng.Debugln("Finished %s with error", es.Target.Fqn())
+			err = fmt.Errorf("%s: %w", es.Target.Fqn(), err)
+		} else {
+			eng.Debugln("Finished %s", es.Target.Fqn())
+			eng.out.CompleteTask(es.Target.Fqn())
+		}
+
+		resc <- result{
+			name: es.Target.Fqn(),
+			err:  err,
+		}
+	}()
 }
 
-func (eng *Engine) _run_step(targetFqn string) error {
-	fqn, err := target.NewFqnFromStr(targetFqn)
-	if err != nil {
-		return err
-	}
-	ts, _ := eng.ResolveTarget(fqn)
-	target := ts[0]
-	script := fqn.Script()
+func (eng *Engine) _run_step(es *ExecutionStep) error {
+	// fqns have been verified at this point
 
-	if target.TaskLogger, err = eng.out.CreateTask(targetFqn, ""); err != nil {
+	script := es.Target.Script()
+
+	var err error
+	if es.Target.TaskLogger, err = eng.out.CreateTask(es.Target.Fqn(), ""); err != nil {
 		return err
 	}
-	defer target.Done()
+	defer es.Target.Done()
+
+
+	if err := es.Target.ExpandTools(eng.Projects[es.Target.Project()].Cache.TargetOuts); err != nil {
+		return fmt.Errorf("expanding tools: %w", err)
+	}
+
+	if err := es.Target.InterpolateMyself(); err != nil {
+		return fmt.Errorf("interpolating myself: %w", err)
+	}
 
 	// load cache
-	var ci *cache.CacheItem
-	ci, err = eng.Projects[target.Project()].Cache.LoadTargetCache(target)
-	if err != nil {
-		return fmt.Errorf("loading cache: %w", err)
-	}
-
 	if script == "build" {
-		target.Cwd = ci.BuildCachePath()
+		es.Cache, err = eng.Projects[es.Target.Project()].Cache.LoadTargetCache(
+			es.Target,
+			es.ExternalPath != nil,
+			filepath.Dir(eng.Projects[es.Target.Project()].Config.PathForPackage(es.Target.Package())),
+		)
+		if err != nil {
+			return fmt.Errorf("loading cache: %w", err)
+		}
 	} else {
-		target.Cwd = ci.BuildOutPath()
-		if eng.Ctx.Env == "" {
-			if len(target.Environments) == 1 {
-				for e := range target.Environments {
-					eng.Ctx.Env = e
-					break
-				}
-			} else if len(target.Environments) > 0 {
-				availableEnvs := []string{}
-				for e := range target.Environments {
-					availableEnvs = append(availableEnvs, e)
-				}
-
-				return fmt.Errorf("no environment was provided. Available options are %s", strings.Join(availableEnvs, ","))
-			}
-		}
-
-		if len(target.Environments) > 0 { // some deployable targets, like docker_container, might be single env
-			target.SetDeployVariables(
-				eng.Ctx.Env,
-				eng.Projects[target.Project()].Config.Deploy.Variables,
-				eng.cliconfig.Deploy.Variables,
-			)
-		}
+		es.Cache, _ = eng.Projects[es.Target.Project()].Cache.ToScriptCache(es.Target)
 	}
+
+	es.Target.Cwd = es.Cache.BuildCachePath()
+	es.Target.Env["CWD"] = es.Target.Cwd
+
+	projSecretEnv := eng_utils.DeepCopyStringMap(eng.Projects[es.Target.Project()].SecretEnv)
+
+	// Secret env gets merged after cache is build, so as to not influence the cache hash
+	es.Target.Env["PATH"] = strings.Join([]string{es.Target.Env["PATH"], projSecretEnv["PATH"]}, ":")
+	delete(projSecretEnv, "PATH")
+
+	for _, e := range es.PassSecretEnv {
+		es.SecretEnv[e] = os.Getenv(e)
+	}
+
+	interpolEnv, err := utils.InterpolateMapWithItself(utils.MergeMaps(
+		projSecretEnv,
+		es.Target.Env,
+		es.SecretEnv, map[string]string{"CWD": es.Target.Cwd},
+	))
+
+	if err != nil {
+		return fmt.Errorf("interpolating script %s vars: %w", script, err)
+	}
+	es.Target.Env = interpolEnv
 
 	// pre run
 	if eng.prePostFns[script] != nil && eng.prePostFns[script].Pre != nil {
-		if err := eng.prePostFns[script].Pre(eng, target, ci); errors.Is(err, DoNotContinue{}) {
+		if err := eng.prePostFns[script].Pre(eng, es); errors.Is(err, DoNotContinue{}) {
 			return nil
 		} else if err != nil {
 			return fmt.Errorf("custom %s pre run: %w", script, err)
 		}
 	}
 
-	if target.Scripts[script].Pre != nil {
-		if err := target.Scripts[script].Pre(target, eng.Ctx); errors.Is(err, DoNotContinue{}) {
+	if es.Pre != nil {
+		if err := es.Pre(es.Target, eng.Ctx); errors.Is(err, DoNotContinue{}) {
 			return nil
 		} else if err != nil {
 			return fmt.Errorf("target %s pre run: %w", script, err)
 		}
 	}
 
-	// run
-	interpolEnv, err := utils.InterpolateMapWithItself(utils.MergeMaps(target.Env, target.Scripts[script].Env, map[string]string{"CWD": target.Cwd}))
-	if err != nil {
-		return fmt.Errorf("interpolating script %s vars: %w", script, err)
-	}
-	target.Env = interpolEnv
-
-	if err := target.Scripts[script].Run(target, eng.Ctx); err != nil {
-		target.Errorln("executing run: %s", err)
+	if err := es.Run(es.Target, eng.Ctx); err != nil {
+		es.Target.Errorln("executing run: %s", err)
 		return err
 	}
 
 	// POST RUN
 	// custom script post run
 	if eng.prePostFns[script] != nil && eng.prePostFns[script].Post != nil {
-		if err := eng.prePostFns[script].Post(eng, target, ci); err != nil {
+		if err := eng.prePostFns[script].Post(eng, es); err != nil {
 			return fmt.Errorf("custom %s post run: %w", script, err)
 		}
 	}
 
 	// target post run
-	if target.Scripts[script].Post != nil {
-		if err := target.Scripts[script].Post(target, eng.Ctx); err != nil {
+	if es.Post != nil {
+		if err := es.Post(es.Target, eng.Ctx); err != nil {
 			return fmt.Errorf("target %s post run: %w", script, err)
 		}
 	}
 
-	eng.Debugln("Finished %s", targetFqn)
+	if err := es.Cache.SaveMetadata(); err != nil {
+		return fmt.Errorf("writing metadata: %w", err)
+	}
 
-	eng.out.CompleteTask(targetFqn)
+	eng.Debugln("Finished %s", es.Target.Fqn())
+
 	return nil
 }
 
@@ -138,20 +155,29 @@ func (eng *Engine) ParseArgsAndRun(flags *pflag.FlagSet, args []string, script s
 		return
 	}
 
-	if err := eng.recursiveAddTargetsToGraph(ts); err != nil {
+	if err := eng.recursiveAddTargetsToGraph(ts, script); err != nil {
 		eng.Errorln("building graph: %w", err)
 		return
+	}
+
+	stepScripts := []string{"build"}
+	if script != "build" {
+		stepScripts = append(stepScripts, script)
 	}
 
 	clean, _ := flags.GetBool("clean")
 	if clean {
 		for _, t := range ts {
-			fqn, err := target.NewFqnFromStrWithDefault(t, script)
+			fqn, err := target.NewFqnFromStr(t)
 			if err != nil {
 				eng.Errorln("inferring target fqn %s", t)
 				return
 			}
-			eng.targets[fqn.Project()][fqn.Package()][fqn.Name()].Clean = true
+
+			for _, s := range stepScripts {
+				eng.execSteps[fqn.Qn() + ":" + s].Clean = true
+				eng.execSteps[fqn.Qn() + ":" + s].SecretEnv["ZEN_OPT_CLEAN"] = "true"
+			}
 		}
 	}
 
@@ -161,14 +187,16 @@ func (eng *Engine) ParseArgsAndRun(flags *pflag.FlagSet, args []string, script s
 			eng.Errorln("inferring target fqn %s", args[0])
 			return
 		}
-		EnterTargetShell(eng.targets[fqn.Project()][fqn.Package()][fqn.Name()], fqn.Script())
+		EnterTargetShell(eng.execSteps[fqn.Fqn()])
 	}
 
+	// eng.PrettyPrintGraph()
+
 	if err := eng.Run(); err != nil {
-		if len(eng.Errors()) == 0 {
+		if len(eng.errors) == 0 {
 			eng.Errorln("executing the graph: %w", err)
 		} else {
-			for _, v := range eng.Errors() {
+			for _, v := range eng.errors {
 				eng.Errorln(v)
 			}
 		}
@@ -183,4 +211,10 @@ func (eng *Engine) AutocompleteTargets(_ *cobra.Command, args []string, toComple
 	}
 
 	return targets, cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp
+}
+
+func (eng *Engine) ExpandTargetsFromBuilder(script string) []*ExecutionStep {
+	steps := []*ExecutionStep{}
+
+	return steps
 }
